@@ -1,0 +1,16 @@
+[package]
+name = "lisp-sitter-cl"
+description = "Common Lisp structural editing plugin for lisp-sitter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lisp-sitter-core = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-commonlisp = { workspace = true }
+
+[dev-dependencies]
+tree-sitter = { workspace = true }
+tree-sitter-commonlisp = { workspace = true }

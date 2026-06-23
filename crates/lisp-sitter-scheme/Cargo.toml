@@ -1,0 +1,16 @@
+[package]
+name = "lisp-sitter-scheme"
+description = "Scheme structural editing plugin for lisp-sitter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lisp-sitter-core = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-scheme = { workspace = true }
+
+[dev-dependencies]
+tree-sitter = { workspace = true }
+tree-sitter-scheme = { workspace = true }
