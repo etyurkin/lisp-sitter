@@ -6,8 +6,10 @@ use serde_json::{json, Value};
 pub fn install_config(cursor: bool, claude: bool) -> Result<()> {
     let binary = std::env::current_exe().context("resolve lisp-sitter binary path")?;
     let entry = json!({
+        "type": "stdio",
         "command": binary,
-        "args": ["mcp", "serve"]
+        "args": ["mcp", "serve"],
+        "env": {}
     });
 
     if cursor || (!cursor && !claude) {
@@ -15,8 +17,12 @@ pub fn install_config(cursor: bool, claude: bool) -> Result<()> {
         eprintln!("Updated {}", cursor_config_path()?.display());
     }
     if claude {
-        merge_mcp_file(&claude_config_path()?, "lisp-sitter", &entry)?;
-        eprintln!("Updated {}", claude_config_path()?.display());
+        // Claude Code CLI reads MCP servers from ~/.claude.json (user scope).
+        // Claude Desktop uses ~/.claude/settings.json; write to both.
+        merge_mcp_file(&claude_code_path()?, "lisp-sitter", &entry)?;
+        eprintln!("Updated {}", claude_code_path()?.display());
+        merge_mcp_file(&claude_desktop_path()?, "lisp-sitter", &entry)?;
+        eprintln!("Updated {}", claude_desktop_path()?.display());
     }
     Ok(())
 }
@@ -25,7 +31,11 @@ fn cursor_config_path() -> Result<PathBuf> {
     Ok(dirs_home()?.join(".cursor").join("mcp.json"))
 }
 
-fn claude_config_path() -> Result<PathBuf> {
+fn claude_code_path() -> Result<PathBuf> {
+    Ok(dirs_home()?.join(".claude.json"))
+}
+
+fn claude_desktop_path() -> Result<PathBuf> {
     Ok(dirs_home()?.join(".claude").join("settings.json"))
 }
 

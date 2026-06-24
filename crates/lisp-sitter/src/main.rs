@@ -106,8 +106,8 @@ enum Command {
 enum McpCommand {
     /// Run MCP server on stdio (for Cursor, Claude Code, etc.)
     Serve,
-    /// Write MCP config to ~/.cursor/mcp.json and/or ~/.claude/settings.json
-    Install { #[arg(long)] cursor: bool, #[arg(long)] claude: bool },
+    /// Write MCP config to ~/.cursor/mcp.json and/or ~/.claude.json + ~/.claude/settings.json
+    Install { #[arg(long)] cursor: bool, #[arg(long, help = "Write to Claude Code (~/.claude.json) and Claude Desktop (~/.claude/settings.json)")] claude: bool },
 }
 
 fn confirm_or_abort() {

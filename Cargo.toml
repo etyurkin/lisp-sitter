@@ -27,7 +27,7 @@ tree-sitter-elisp = "1.6"
 tree-sitter-commonlisp = "0.4"
 tree-sitter-scheme = "0.24"
 thiserror = "2"
-rmcp = { version = "1.7", features = ["server", "transport-io"] }
+rmcp = { version = "1.8", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
