@@ -71,6 +71,16 @@ lisp-sitter check-node --lang scheme --body '(define x 1)'
 | `__end__` | Append after the last top-level form |
 | *symbol* | Insert immediately after the named form |
 
+### Shell completions
+
+Tab-complete subcommands and file paths in your shell:
+
+```bash
+eval "$(lisp-sitter completions bash)"   # bash
+eval "$(lisp-sitter completions zsh)"    # zsh
+lisp-sitter completions fish | source    # fish
+```
+
 ### stdin
 
 `--body-file -` and `--node-file -` read from stdin:
@@ -122,6 +132,28 @@ lisp-sitter remove "*.lisp" dead-func --write
 ```
 
 Exit code `0` on success, `1` on error.
+
+### Safety
+
+- `--diff` — show line-based diff on stderr before changes
+- `--confirm` — show diff + prompt before writing
+- Auto-backups — previous version saved to `$TMPDIR/lisp-sitter-backups/`
+- Atomic writes — temp file + rename, never corrupts on crash
+
+### Configuration
+
+Language is inferred from file extension. Override with `LISP_SITTER_LANG=elisp|commonlisp|scheme` or the `--lang` global flag.
+
+Custom extension mappings can be set in `~/.lisp-sitter.json` or `~/.config/lisp-sitter/config.json`:
+
+```json
+{
+  "extensions": {
+    ".foo": "elisp",
+    ".bar": "scheme"
+  }
+}
+```
 
 ## Agent workflow
 
