@@ -8,6 +8,7 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt,
 };
 use rmcp::transport::stdio;
+use tree_sitter::Parser;
 use serde::Deserialize;
 
 #[derive(Clone)]
@@ -17,7 +18,46 @@ pub struct LispSitterMcp {
     tool_router: ToolRouter<Self>,
 }
 
-impl LispSitterMcp { pub fn new(reg: Registry) -> Self { Self { reg: Arc::new(reg), tool_router: Self::tool_router() } } }
+impl LispSitterMcp {
+    pub fn new(reg: Registry) -> Self {
+        Self {
+            reg: Arc::new(reg),
+            tool_router: Self::tool_router(),
+        }
+    }
+}
+
+/// Parse `content` with a thread-local, lazily-constructed parser.
+/// The grammar is re-set each call, but the parser object itself is reused
+/// across successive MCP tool invocations.
+///
+/// Currently this helper is available but not wired into the plugin
+/// parse-pipeline (plugins still create their own `Parser`).  It is
+/// kept as infrastructure for a future refactoring where the plugin
+/// trait gains a `ParserProvider` hook.
+#[allow(dead_code)]
+pub fn parse_cached(content: &str, lang_id: &str) -> Option<tree_sitter::Tree> {
+    thread_local! {
+        static TL_PARSER: std::cell::RefCell<Option<Parser>> = const { std::cell::RefCell::new(None) };
+    }
+    TL_PARSER.try_with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if guard.is_none() {
+            *guard = Some(Parser::new());
+        }
+        let parser: &mut Parser = guard.as_mut().unwrap();
+        let lang = match lang_id {
+            "elisp" => tree_sitter_elisp::LANGUAGE.into(),
+            "commonlisp" => tree_sitter_commonlisp::LANGUAGE_COMMONLISP.into(),
+            "scheme" => tree_sitter_scheme::LANGUAGE.into(),
+            _ => return None,
+        };
+        parser.set_language(&lang).ok()?;
+        parser.parse(content, None)
+    })
+    .ok()
+    .flatten()
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct PathArgs { path: String, #[serde(default)] semantic: bool }
@@ -44,7 +84,7 @@ struct CompleteArgs { lang: String, body: String }
 struct FormatArgs { path: String, #[serde(default)] write: bool, #[serde(default)] diff: bool }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct RenameArgs { path: String, old: String, new: String, #[serde(default)] write: bool }
+struct RenameArgs { path: String, old: String, new: String, #[serde(default)] write: bool, #[serde(default)] refs: bool }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WrapArgs { path: String, symbol: String, r#in: String, #[serde(default)] bindings: Option<String>, #[serde(default)] condition: Option<String>, #[serde(default)] write: bool }
@@ -119,26 +159,36 @@ impl LispSitterMcp {
 
     #[tool(description = "Evaluate a file using the language's native tool (emacs, sbcl, guile).")]
     async fn structural_eval(&self, Parameters(args): Parameters<PathArgs>) -> Result<String, String> {
-        match lisp_sitter::eval::eval_file(&args.path) { Ok((s, e, ok)) => { let mut r = String::new(); if !s.is_empty() { r.push_str(&s); } if !e.is_empty() { if !r.is_empty() { r.push('\n'); } r.push_str(&e); } if ok { Ok(r) } else { Err(if r.is_empty() { "error".into() } else { r }) } } Err(e) => Err(e.to_string()) }
+        match lisp_sitter::eval::eval_file(&args.path) {
+            Ok((s, e, ok)) => {
+                let mut r = String::new();
+                if !s.is_empty() { r.push_str(&s); }
+                if !e.is_empty() { if !r.is_empty() { r.push('\n'); } r.push_str(&e); }
+                if ok { Ok(r) } else { Err(if r.is_empty() { "error".into() } else { r }) }
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     #[tool(description = "Re-indent a file (depth-based). Pass write=true to save.")]
     async fn structural_format(&self, Parameters(args): Parameters<FormatArgs>) -> Result<String, String> {
-        let c = ops::read_file(&args.path).map_err(|e| e.to_string())?; let f = lisp_sitter_core::format_source(&c); let mut r = String::new();
+        let c = ops::read_file(&args.path).map_err(|e| e.to_string())?; let f = ops::format_file(&self.reg, &args.path).map_err(|e| e.to_string())?; let mut r = String::new();
         if args.diff { let d = ops::diff_text(&c, &f, &args.path); if !d.is_empty() { r.push_str(&d); } }
         if args.write { let p = self.reg.plugin_for_path(&args.path).map_err(|e| e.to_string())?; p.check_file(&f).map_err(|e| e.to_string())?; ops::atomic_write(&args.path, &f).map_err(|e| e.to_string())?; r.push_str(&format!("Wrote {}", args.path)); } else { r.push_str(&f); } Ok(r)
     }
 
     #[tool(description = "Rename a top-level form and its call sites.")]
     async fn structural_rename(&self, Parameters(args): Parameters<RenameArgs>) -> Result<String, String> {
-        let u = lisp_sitter::transform::rename(&self.reg, &args.path, &args.old, &args.new).map_err(|e| e.to_string())?;
+        let ref_mode = if args.refs { lisp_sitter::transform::RefsMode::AllRefs } else { lisp_sitter::transform::RefsMode::HeadAndSharp };
+        let u = lisp_sitter::transform::rename(&self.reg, &args.path, &args.old, &args.new, ref_mode).map_err(|e| e.to_string())?;
         if args.write { ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?; Ok(format!("Wrote {}", args.path)) } else { Ok(u) }
     }
 
     #[tool(description = "Wrap the body of a named form in a construct (progn, let, if).")]
     async fn structural_wrap(&self, Parameters(args): Parameters<WrapArgs>) -> Result<String, String> {
         let mut xs: Vec<(&str, &str)> = Vec::new();
-        if let Some(ref b) = args.bindings { xs.push(("bindings", b)); } if let Some(ref c) = args.condition { xs.push(("condition", c)); }
+        if let Some(ref b) = args.bindings { xs.push(("bindings", b)); }
+        if let Some(ref c) = args.condition { xs.push(("condition", c)); }
         let u = lisp_sitter::transform::wrap_body(&self.reg, &args.path, &args.symbol, &args.r#in, &xs).map_err(|e| e.to_string())?;
         if args.write { ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?; Ok(format!("Wrote {}", args.path)) } else { Ok(u) }
     }
@@ -339,7 +389,7 @@ mod tests {
     async fn test_structural_rename() {
         let s = mcp();
         let (dir, p) = tmp_el("rename", "(defun foo () 1)\n");
-        let r = s.structural_rename(Parameters(RenameArgs {
+        let r = s.structural_rename(Parameters(RenameArgs { refs: false,
             path: p.to_str().unwrap().to_string(),
             old: "foo".into(),
             new: "bar".into(),
@@ -545,8 +595,12 @@ mod tests {
             params: Some("".into()),
             write: false,
         })).await;
-        // Expects error because __start__ anchor requires empty file, but params parsing is exercised
-        assert!(r.is_err());
+        // extract now inserts adjacent to the definition (not __start__, which
+        // only worked on empty files). With empty params and a real file, it
+        // should detect params from the body and succeed.
+        assert!(r.is_ok(), "extract should succeed: {:?}", r.err());
+        let got = r.unwrap();
+        assert!(got.contains("defun add1"), "should define add1: {got}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

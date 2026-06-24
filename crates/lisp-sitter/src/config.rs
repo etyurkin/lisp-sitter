@@ -7,6 +7,11 @@ use lisp_sitter_core::Registry;
 pub struct Config {
     #[serde(default)]
     pub extensions: HashMap<String, String>,
+    /// Extra top-level definer keywords per language id (`elisp`, `commonlisp`,
+    /// `scheme`) — e.g. project-specific def-macros. Each is treated like a
+    /// `defun`/`define` (name is the second element).
+    #[serde(default)]
+    pub extra_definers: HashMap<String, Vec<String>>,
 }
 
 impl Config {
@@ -28,6 +33,11 @@ impl Config {
             }
         }
         Config::default()
+    }
+
+    /// Extra definer keywords configured for a language id (empty if none).
+    pub fn definers_for(&self, lang_id: &str) -> &[String] {
+        self.extra_definers.get(lang_id).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     /// Register custom extension mappings into the Registry.

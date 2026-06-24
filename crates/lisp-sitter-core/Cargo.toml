@@ -10,3 +10,6 @@ authors.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tree-sitter.workspace = true
+
+[dev-dependencies]
+proptest = "1"

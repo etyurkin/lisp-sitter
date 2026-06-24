@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use lisp_sitter_core::edit::{get_form_text, insert_after, replace_node};
 use lisp_sitter_core::error::{check_ok, syntax_error, syntax_error_node, Error};
 use lisp_sitter_core::position::pos_label;
-use lisp_sitter_core::{complete_form, format_source, Registry};
+use lisp_sitter_core::{complete_form_in, format_source_in, Dialect, Registry};
 
 fn format_bounds(s: usize, e: usize) -> String { format!("{s}:{e}") }
 fn format_check(r: Result<(), Error>) -> String { match r { Ok(()) => check_ok(), Err(Error::Syntax(d)) => syntax_error(d), Err(e) => e.to_string() } }
@@ -12,7 +12,7 @@ fn format_check_node(r: Result<(), Error>) -> String { match r { Ok(()) => check
 
 pub fn resolve_plugin<'a>(reg: &'a Registry, path: &str, lang: Option<&str>) -> Result<&'a dyn lisp_sitter_core::LanguagePlugin, Error> {
     static ENV: OnceLock<String> = OnceLock::new();
-    let lang = lang.or_else(|| std::env::var("LISP_SITTER_LANG").ok().and_then(|v| Some(ENV.get_or_init(|| v).as_str())));
+    let lang = lang.or_else(|| std::env::var("LISP_SITTER_LANG").ok().map(|v| ENV.get_or_init(|| v).as_str()));
     match lang {
         Some(id) => reg.plugin_for_id(id).ok_or_else(|| Error::NoPlugin(id.to_string())),
         None => reg.plugin_for_path(path).or_else(|_| {
@@ -73,33 +73,49 @@ pub fn get_form(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> 
     let c = read_file(path)?; Ok(get_form_text(resolve_plugin(reg, path, None)?, &c, sym)?.to_string())
 }
 
-pub fn complete_node(_reg: &Registry, _lang: &str, body: &str) -> Result<String, Error> {
-    let i = body.trim(); if i.is_empty() { return Err(Error::EmptyForm); }
-    complete_form(i).or_else(|| Some(i.to_string())).ok_or_else(|| Error::Message("could not complete".into()))
+/// Char-literal flavor for a language id (`elisp` uses `?\(`; others use `#\(`).
+pub fn dialect_for_id(id: &str) -> Dialect {
+    if id == "elisp" { Dialect::Elisp } else { Dialect::Generic }
 }
 
-pub fn format_file(reg: &Registry, path: &str) -> Result<String, Error> { let c = read_file(path)?; let _ = resolve_plugin(reg, path, None)?; Ok(format_source(&c)) }
+pub fn complete_node(_reg: &Registry, lang: &str, body: &str) -> Result<String, Error> {
+    let i = body.trim(); if i.is_empty() { return Err(Error::EmptyForm); }
+    complete_form_in(i, dialect_for_id(lang)).or_else(|| Some(i.to_string())).ok_or_else(|| Error::Message("could not complete".into()))
+}
+
+pub fn format_file(reg: &Registry, path: &str) -> Result<String, Error> { let c = read_file(path)?; let p = resolve_plugin(reg, path, None)?; Ok(format_source_in(&c, dialect_for_id(p.id()))) }
 
 pub fn fmt_write(reg: &Registry, path: &str) -> Result<String, Error> {
-    let c = read_file(path)?; let p = resolve_plugin(reg, path, None)?; let f = format_source(&c);
+    let c = read_file(path)?; let p = resolve_plugin(reg, path, None)?; let f = format_source_in(&c, dialect_for_id(p.id()));
     p.check_file(&f).map_err(|e| match e { Error::Syntax(d) => Error::SyntaxAfterEdit { operation: "fmt".into(), detail: d }, o => o })?;
     atomic_write(path, &f)?; Ok(format!("Wrote {path}"))
 }
 
-pub fn read_file(path: &str) -> Result<String, Error> {
+/// Read a source file. When the file is missing: if `allow_missing` is set and
+/// the path has a known Lisp extension, return an empty string (so `insert`/
+/// `replace` can create new files); otherwise error.
+pub fn read_source(path: &str, allow_missing: bool) -> Result<String, Error> {
     let p = Path::new(path);
-    if p.exists() { std::fs::read_to_string(p).map_err(|e| Error::Message(format!("read {path}: {e}"))) }
-    else if is_lisp_ext(path) { Ok(String::new()) }
-    else { Err(Error::Message(format!("file not found: {path}"))) }
+    if p.exists() {
+        std::fs::read_to_string(p).map_err(|e| Error::Message(format!("read {path}: {e}")))
+    } else if allow_missing && is_lisp_ext(path) {
+        Ok(String::new())
+    } else {
+        Err(Error::Message(format!("file not found: {path}")))
+    }
+}
+
+pub fn read_file(path: &str) -> Result<String, Error> {
+    read_source(path, true)
 }
 
 pub fn atomic_write(path: &str, content: &str) -> Result<(), Error> {
     let p = Path::new(path);
     if let Some(parent) = p.parent() { if !parent.as_os_str().is_empty() { std::fs::create_dir_all(parent).map_err(|e| Error::Message(format!("mkdir {}: {e}", parent.display())))?; } }
     if p.exists() { if let Ok(old) = std::fs::read_to_string(p) { if old != content {
-        let safe = p.to_string_lossy().replace('/', "_").replace(':', "_");
+        let safe = p.to_string_lossy().replace(['/', ':'], "_");
         let bak_dir = std::env::temp_dir().join("lisp-sitter-backups"); let _ = std::fs::create_dir_all(&bak_dir);
-        let _ = std::fs::write(&bak_dir.join(format!("{}.bak", safe)), &old);
+        let _ = std::fs::write(bak_dir.join(format!("{}.bak", safe)), &old);
     }}}
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
     let mut n = p.file_name().unwrap_or_default().to_os_string(); n.push(format!(".{ts}.tmp"));
@@ -113,7 +129,7 @@ pub fn callers(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
     let c = read_file(path)?; let p = resolve_plugin(reg, path, None)?; let def = p.node_bounds(&c, sym).ok();
     let pat = format!("({} ", sym); let pat2 = format!("({})", sym); let mut r = Vec::new(); let mut s = 0;
     loop { let pos = if let Some(pos) = c[s..].find(&pat) { s + pos } else if let Some(pos) = c[s..].find(&pat2) { s + pos } else { break };
-        if def.map_or(false, |(ds, de)| pos >= ds && pos < de) { s = pos + 1; continue; }
+        if def.is_some_and(|(ds, de)| pos >= ds && pos < de) { s = pos + 1; continue; }
         if let Some(o) = p.list_forms(&c)?.iter().find(|f| pos >= f.start && pos < f.end) { r.push(pos_label(&c, pos, &format!("{} calls {}", o.label, sym))); }
         s = pos + 1; }
     if r.is_empty() { Ok(format!("No callers of `{sym}` found")) } else { Ok(r.join("\n")) }

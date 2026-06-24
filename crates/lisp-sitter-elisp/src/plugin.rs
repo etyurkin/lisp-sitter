@@ -1,9 +1,32 @@
 use lisp_sitter_core::treesit_util::outline_lines;
-use lisp_sitter_core::{Error, FormInfo, LanguagePlugin, Result};
+use lisp_sitter_core::{DefinerSet, Error, FormInfo, LanguagePlugin, Result};
 
-use crate::treesit::{has_parse_errors, replaceable_label, top_level_forms};
+use crate::treesit::{base_definers, has_parse_errors, top_level_forms};
 
-pub struct ElispPlugin;
+pub struct ElispPlugin {
+    definers: DefinerSet,
+}
+
+impl ElispPlugin {
+    /// Plugin with the built-in Emacs Lisp definer set.
+    pub fn new() -> Self {
+        Self { definers: DefinerSet::new(base_definers()) }
+    }
+
+    /// Plugin whose definer set also recognizes the given extra keywords
+    /// (user-configured project def-macros).
+    pub fn with_extra_definers(extra: &[String]) -> Self {
+        let mut definers = DefinerSet::new(base_definers());
+        definers.extend_keywords(extra);
+        Self { definers }
+    }
+}
+
+impl Default for ElispPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl LanguagePlugin for ElispPlugin {
     fn id(&self) -> &'static str {
@@ -15,11 +38,11 @@ impl LanguagePlugin for ElispPlugin {
     }
 
     fn top_level_forms(&self, content: &str) -> Result<Vec<FormInfo>> {
-        Ok(top_level_forms(content))
+        Ok(top_level_forms(content, &self.definers))
     }
 
     fn list_forms(&self, content: &str) -> Result<Vec<FormInfo>> {
-        Ok(top_level_forms(content))
+        Ok(top_level_forms(content, &self.definers))
     }
 
     fn check_file(&self, content: &str) -> Result<()> {
@@ -32,7 +55,7 @@ impl LanguagePlugin for ElispPlugin {
     }
 
     fn outline(&self, content: &str) -> Result<String> {
-        let forms = top_level_forms(content);
+        let forms = top_level_forms(content, &self.definers);
         if forms.is_empty() && !content.trim().is_empty() {
             validate_content(content)?;
         }
@@ -50,24 +73,13 @@ impl LanguagePlugin for ElispPlugin {
 
     fn node_bounds(&self, content: &str, symbol: &str) -> Result<(usize, usize)> {
         let target = symbol.trim();
-        for form in top_level_forms(content) {
-            let Some(name) = form.name.as_deref() else {
-                continue;
-            };
-            if name != target {
-                continue;
-            }
-            if !replaceable_label(&form.label) {
-                continue;
-            }
-            return Ok((form.start, form.end));
-        }
-        Err(Error::FormNotFound(target.to_string()))
+        crate::treesit::node_bounds(content, &self.definers, target)
+            .ok_or_else(|| Error::FormNotFound(target.to_string()))
     }
 
     fn semantic_check(&self, content: &str) -> Vec<String> {
         let mut warnings = Vec::new();
-        let forms = top_level_forms(content);
+        let forms = top_level_forms(content, &self.definers);
 
         // ── check: missing docstrings ───────────────────────────
         for f in &forms {
@@ -77,17 +89,17 @@ impl LanguagePlugin for ElispPlugin {
                 f.label.split(':').next().unwrap_or(""),
                 "defun" | "defsubst" | "cl-defun" | "defmacro"
             );
-            if is_def && !has_docstring(text) {
+            if is_def && !lisp_sitter_core::has_docstring(text) {
                 warnings.push(format!(
                     "{}: missing docstring",
-                    lisp_sitter_core::position::pos_label(content, f.start, &f.label)
+                    lisp_sitter_core::treesit_util::pos_label(content, f.start, &f.label)
                 ));
             }
             let is_defvar = matches!(
                 f.label.split(':').next().unwrap_or(""),
                 "defvar" | "defconst" | "defcustom"
             );
-            if is_defvar && !has_docstring(text) && !text.contains("&define") {
+            if is_defvar && !lisp_sitter_core::has_docstring(text) && !text.contains("&define") {
                 warnings.push(format!(
                     "{}: missing docstring",
                     lisp_sitter_core::position::pos_label(content, f.start, &f.label)
@@ -112,42 +124,10 @@ impl LanguagePlugin for ElispPlugin {
     }
 }  // impl LanguagePlugin for ElispPlugin
 
-fn has_docstring(form_text: &str) -> bool {
-    // A docstring is a string literal right after the arglist.
-    // Quick heuristic: look for `"…"` after the first `)` of the arglist.
-    let mut depth = 0i32;
-    let mut found_after_args = false;
-    let bytes = form_text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => { depth += 1; i += 1; }
-            b')' => {
-                if depth == 1 {
-                    // This `)` closes the arglist (next meaningful thing should be docstring)
-                    found_after_args = true;
-                }
-                depth -= 1;
-                i += 1;
-            }
-            b'"' if found_after_args => {
-                // Found a string right after the arglist — that's the docstring
-                return true;
-            }
-            b';' => { while i < bytes.len() && bytes[i] != b'\n' { i += 1; } }
-            b'#' if i + 1 < bytes.len() && bytes[i+1] == b'|' => {
-                while i + 1 < bytes.len() && !(bytes[i] == b'|' && bytes[i+1] == b'#') { i += 1; }
-                if i < bytes.len() { i += 2; }
-            }
-            _ => { i += 1; }
-        }
-        if depth < 0 { break; }
-    }
-    false
-}
-
 fn validate_content(content: &str) -> Result<()> {
-    if let Some(err) = lisp_sitter_core::scan::scan_parens(content) {
+    if let Some(err) =
+        lisp_sitter_core::scan::scan_parens_in(content, lisp_sitter_core::Dialect::Elisp)
+    {
         return Err(Error::Syntax(err));
     }
     if has_parse_errors(content) {
@@ -166,19 +146,19 @@ mod tests {
     #[test]
     fn check_valid_file() {
         let content = "(defun foo ()\n  (+ 1 2))\n(provide 'foo)\n";
-        assert!(ElispPlugin.check_file(content).is_ok());
+        assert!(ElispPlugin::new().check_file(content).is_ok());
     }
 
     #[test]
     fn check_invalid_unbalanced() {
         let content = "(defun foo ()\n  (+ 1 2\n";
-        assert!(ElispPlugin.check_file(content).is_err());
+        assert!(ElispPlugin::new().check_file(content).is_err());
     }
 
     #[test]
     fn bounds_beta() {
         let content = "(defun alpha () 1)\n\n(defun beta () 2)\n";
-        let bounds = ElispPlugin.node_bounds(content, "beta").unwrap();
+        let bounds = ElispPlugin::new().node_bounds(content, "beta").unwrap();
         assert!(bounds.0 < bounds.1);
         let rendered = format!("{}:{}", bounds.0, bounds.1);
         assert!(rendered.chars().any(|c| c.is_ascii_digit()));
@@ -188,24 +168,24 @@ mod tests {
     fn replace_defun() {
         let content = "(defun old-f ()\n  1)\n(provide 'x)\n";
         let new_body = "(defun old-f ()\n  2)\n";
-        let updated = replace_node(&ElispPlugin, content, "old-f", new_body).unwrap();
+        let updated = replace_node(&ElispPlugin::new(), content, "old-f", new_body).unwrap();
         assert!(updated.contains("2)"));
-        assert!(ElispPlugin.check_file(&updated).is_ok());
+        assert!(ElispPlugin::new().check_file(&updated).is_ok());
     }
 
     #[test]
     fn insert_after_form() {
         let content = "(defun first () 1)\n(provide 'x)\n";
         let form = "(defun second () 2)";
-        let updated = insert_after(&ElispPlugin, content, "first", form).unwrap();
+        let updated = insert_after(&ElispPlugin::new(), content, "first", form).unwrap();
         assert!(updated.contains("defun second"));
-        assert!(ElispPlugin.check_file(&updated).is_ok());
+        assert!(ElispPlugin::new().check_file(&updated).is_ok());
     }
 
     #[test]
     fn insert_at_start() {
         let updated =
-            insert_after(&ElispPlugin, "", "__start__", "(defun first () 1)").unwrap();
+            insert_after(&ElispPlugin::new(), "", "__start__", "(defun first () 1)").unwrap();
         assert!(updated.contains("defun first"));
     }
 
@@ -213,14 +193,14 @@ mod tests {
     fn insert_at_end() {
         let content = "(defun first () 1)\n";
         let updated =
-            insert_after(&ElispPlugin, content, "__end__", "(provide 'x)").unwrap();
+            insert_after(&ElispPlugin::new(), content, "__end__", "(provide 'x)").unwrap();
         assert!(updated.contains("provide"));
     }
 
     #[test]
     fn outline_labels() {
         let content = "(defun a () 1)\n(defvar b 2)\n(defconst c 3)\n";
-        let tree = ElispPlugin.outline(content).unwrap();
+        let tree = ElispPlugin::new().outline(content).unwrap();
         assert!(tree.contains("defun:a"));
         assert!(tree.contains("defvar:b"));
         assert!(tree.contains("defconst:c"));

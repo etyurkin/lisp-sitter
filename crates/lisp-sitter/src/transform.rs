@@ -1,24 +1,32 @@
 use lisp_sitter_core::edit::{get_form_text, insert_after, replace_node};
-use lisp_sitter_core::{Error, Registry};
+use lisp_sitter_core::sexp_reader::Dialect;
+use lisp_sitter_core::{Error, LanguagePlugin, Registry};
 
 // ── helpers ────────────────────────────────────────────────────
 
 fn ops_read(path: &str) -> Result<String, Error> {
-    let p = std::path::Path::new(path);
-    if p.exists() { std::fs::read_to_string(p).map_err(|e| Error::Message(format!("read {path}: {e}"))) }
-    else { Err(Error::Message(format!("file not found: {path}"))) }
+    crate::ops::read_source(path, false)
+}
+
+/// Char-literal flavor for a plugin (elisp uses `?\(`; CL/Scheme use `#\(`).
+fn dialect_of(p: &dyn LanguagePlugin) -> Dialect {
+    if p.id() == "elisp" { Dialect::Elisp } else { Dialect::Generic }
 }
 
 fn skip_sp(bytes: &[u8], mut i: usize) -> usize { while i < bytes.len() && (bytes[i] as char).is_whitespace() { i += 1; } i }
 fn skip_sym(bytes: &[u8], mut i: usize) -> usize {
     while i < bytes.len() && !(bytes[i] as char).is_whitespace() && bytes[i] != b'(' && bytes[i] != b')' { i += 1; } i
 }
-fn skip_sexp(bytes: &[u8], mut i: usize) -> usize {
-    if i >= bytes.len() { return i; }
-    if bytes[i] == b'(' { let mut d = 1u32; i += 1;
-        while i < bytes.len() && d > 0 { match bytes[i] { b'(' => d += 1, b')' => d -= 1, b'"' => { i += 1; while i < bytes.len() && bytes[i] != b'"' { if bytes[i] == b'\\' { i += 2; continue; } i += 1; } } _ => {} } i += 1; }
-    } else { i = skip_sym(bytes, i); }
-    i
+
+/// Skip one s-expression using the shared core scanner (handles strings,
+/// comments, char literals, vectors). On malformed input (e.g. a stray `)` or
+/// EOF) the position is left unchanged, so callers must guard against
+/// no-progress when looping.
+fn skip_sexp(bytes: &[u8], i: usize) -> usize {
+    skip_sexp_d(bytes, i, Dialect::Generic)
+}
+fn skip_sexp_d(bytes: &[u8], i: usize, d: Dialect) -> usize {
+    lisp_sitter_core::sexp_reader::skip_sexp_in(bytes, i, d).unwrap_or(i)
 }
 
 fn find_sexp(ft: &str, pat: &str) -> Option<(usize, usize)> {
@@ -39,16 +47,108 @@ fn body_range(ft: &str) -> Result<(usize, usize), Error> {
     Ok((bs, be))
 }
 
-fn replace_call_sites(c: &str, old: &str, new: &str) -> String {
-    c.replace(&format!("({} ", old), &format!("({} ", new)).replace(&format!("({})", old), &format!("({})", new))
+/// Controls which `old`-symbol references `replace_head_symbol` renames.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RefsMode {
+    /// Only `(old …)` and `#'old` call sites.
+    HeadAndSharp,
+    /// `(old …)`, `#'old`, and plain `'old` references.
+    AllRefs,
+    /// Only `(old …)` head positions — no quoted refs at all.
+    HeadOnly,
+}
+
+/// Replace `old` with `new` where it appears as the head symbol of a list —
+/// `(old …)` / `(old)` call sites — leaving strings, comments and char literals
+/// untouched. `refs` controls which quoted/sharp-quoted references are renamed.
+fn replace_head_symbol(c: &str, old: &str, new: &str, d: Dialect, refs: RefsMode) -> String {
+    let b = c.as_bytes();
+    let mut out = String::with_capacity(c.len() + new.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' => {
+                let e = lisp_sitter_core::sexp_reader::skip_string(b, i)
+                    .unwrap_or(b.len());
+                out.push_str(&c[i..e]);
+                i = e;
+            }
+            b';' => {
+                let e = lisp_sitter_core::sexp_reader::skip_line_comment(b, i)
+                    .unwrap_or(b.len());
+                out.push_str(&c[i..e]);
+                i = e;
+            }
+            b'#' if i + 1 < b.len() && b[i + 1] == b'|' => {
+                let e = lisp_sitter_core::sexp_reader::skip_block_comment(b, i)
+                    .unwrap_or(b.len());
+                out.push_str(&c[i..e]);
+                i = e;
+            }
+            // #'old — sharp-quoted function reference (default)
+            b'#' if (refs != RefsMode::HeadOnly) && i + 1 < b.len() && b[i + 1] == b'\'' => {
+                out.push_str("#'");
+                i += 2;
+                let sym_end = skip_sym(b, i);
+                if sym_end > i && &c[i..sym_end] == old {
+                    out.push_str(new);
+                    i = sym_end;
+                }
+            }
+            // char literals — copy verbatim so an embedded paren isn't treated as a list
+            b'#' if i + 1 < b.len() && b[i + 1] == b'\\' => {
+                let e = skip_sexp_d(b, i, d);
+                out.push_str(&c[i..e]);
+                i = e;
+            }
+            b'?' if d == Dialect::Elisp => {
+                let e = skip_sexp_d(b, i, d);
+                out.push_str(&c[i..e]);
+                i = e;
+            }
+            // 'old — quoted symbol reference (only with AllRefs; not for quoted lists '(…))
+            b'\'' if refs == RefsMode::AllRefs && (i + 1 >= b.len() || b[i + 1] != b'(') => {
+                out.push('\'');
+                i += 1;
+                let sym_end = skip_sym(b, i);
+                if sym_end > i && &c[i..sym_end] == old {
+                    out.push_str(new);
+                    i = sym_end;
+                }
+            }
+            b'(' => {
+                out.push('(');
+                i += 1;
+                let ws = skip_sp(b, i);
+                let sym_end = skip_sym(b, ws);
+                if &c[ws..sym_end] == old && sym_end > ws {
+                    out.push_str(&c[i..ws]); // preserve whitespace after (
+                    out.push_str(new);
+                    i = sym_end;
+                }
+            }
+            _ => {
+                let l = utf8_len(b[i]);
+                let e = (i + l).min(b.len());
+                out.push_str(&c[i..e]);
+                i = e;
+            }
+        }
+    }
+    out
+}
+
+/// Byte length of the UTF-8 char whose lead byte is `b`.
+fn utf8_len(b: u8) -> usize {
+    if b < 0x80 { 1 } else if b >> 5 == 0b110 { 2 } else if b >> 4 == 0b1110 { 3 } else if b >> 3 == 0b11110 { 4 } else { 1 }
 }
 
 // ── rename ─────────────────────────────────────────────────────
 
-pub fn rename(reg: &Registry, path: &str, old: &str, new: &str) -> Result<String, Error> {
+pub fn rename(reg: &Registry, path: &str, old: &str, new: &str, refs: RefsMode) -> Result<String, Error> {
     let c = ops_read(path)?; let p = reg.plugin_for_path(path)?;
     let u = replace_node_header(p, &c, old, new)?;
-    let u = replace_call_sites(&u, old, new);
+    let u = replace_head_symbol(&u, old, new, dialect_of(p), refs);
     p.check_file(&u).map_err(|e| match e { Error::Syntax(d) => Error::SyntaxAfterEdit { operation: "rename".into(), detail: d }, o => o, })?; Ok(u)
 }
 
@@ -61,7 +161,7 @@ fn replace_name_in_form(t: &str, old: &str, new: &str) -> String {
     let a = &s[1..].trim_start(); let he = a.find(|c: char| c.is_whitespace()).unwrap_or(0);
     if he == 0 { return t.to_string(); }
     let ah = &a[he..].trim_start();
-    if ah.starts_with('(') { let inner = &ah[1..]; let ne = inner.find(|c: char| c.is_whitespace() || c == ')').unwrap_or(inner.len());
+    if let Some(inner) = ah.strip_prefix('(') { let ne = inner.find(|c: char| c.is_whitespace() || c == ')').unwrap_or(inner.len());
         if &inner[..ne] == old { return format!("({} ({}{}", &a[..he], new, &inner[ne..]); } }
     else { let ne = ah.find(|c: char| c.is_whitespace()).unwrap_or(ah.len());
         if &ah[..ne] == old { return format!("({} {}{}", &a[..he], new, &ah[ne..]); } }
@@ -74,7 +174,7 @@ pub fn remove_form(reg: &Registry, path: &str, sym: &str, keep: bool) -> Result<
     let c = ops_read(path)?; let p = reg.plugin_for_path(path)?; let (s, e) = p.node_bounds(&c, sym)?;
     let rs = (0..s).rev().find(|&i| !c.as_bytes()[i].is_ascii_whitespace()).map(|i| i + 1).unwrap_or(s);
     let mut u = String::with_capacity(c.len()); u.push_str(&c[..rs]); if rs < s { u.push('\n'); } u.push_str(&c[e..]);
-    if !keep { u = replace_call_sites(&u, sym, "ignore"); }
+    if !keep { u = replace_head_symbol(&u, sym, "ignore", dialect_of(p), RefsMode::HeadOnly); }
     p.check_file(&u).map_err(|e| match e { Error::Syntax(d) => Error::SyntaxAfterEdit { operation: "remove".into(), detail: d }, o => o, })?; Ok(u)
 }
 
@@ -106,7 +206,7 @@ pub fn extract(reg: &Registry, path: &str, sym: &str, pat: &str, name: &str, par
     let nd = if p.id() == "scheme" { format!("(define ({name} {ps})\n  {ex})\n") } else { format!("(defun {name} {ps}\n  {ex})\n") };
     let call = if fv.is_empty() { format!("({name})") } else { format!("({} {})", name, fv.join(" ")) };
     let uf = format!("{}{}{}", &ft[..s], &call, &ft[e..]); let as_ = replace_node(p, &c, sym, &uf)?;
-    let p2 = reg.plugin_for_path(path)?; let ins = insert_after(p2, &as_, "__start__", &nd)?;
+    let p2 = reg.plugin_for_path(path)?; let ins = insert_after(p2, &as_, sym, &nd)?;
     p2.check_file(&ins).map_err(|e| match e { Error::Syntax(d) => Error::SyntaxAfterEdit { operation: "extract".into(), detail: d }, o => o, })?; Ok(ins)
 }
 
@@ -159,7 +259,7 @@ pub fn instrument(reg: &Registry, path: &str, sym: &str, with: Option<&str>, at:
 fn instr_body(body: &str, trace: &str) -> String {
     let b = body.as_bytes(); let mut out = String::new(); let mut i = 0; let mut first = true;
     loop { while i < b.len() && b[i].is_ascii_whitespace() { i += 1; } if i >= b.len() { break; }
-        let n = skip_sexp(b, i); let f = (&body[i..n]).trim();
+        let n = skip_sexp(b, i); if n <= i { break; } let f = body[i..n].trim();
         if !f.is_empty() { if !first { out.push('\n'); } out.push_str(&format!("(progn\n  {}\n  {})", trace, f)); first = false; }
         i = n; }
     out
@@ -167,16 +267,169 @@ fn instr_body(body: &str, trace: &str) -> String {
 
 // ── flatten ────────────────────────────────────────────────────
 
+/// Byte ranges of the elements inside a form `(head e1 e2 …)`, relative to `ft`.
+fn split_elements(ft: &str, d: Dialect) -> Vec<(usize, usize)> {
+    let b = ft.as_bytes();
+    let open = match ft.find('(') { Some(o) => o + 1, None => return Vec::new() };
+    let close = ft.rfind(')').unwrap_or(ft.len());
+    let mut i = open;
+    let mut elems = Vec::new();
+    while i < close {
+        i = skip_sp(b, i);
+        if i >= close { break; }
+        let s = i;
+        let e = skip_sexp_d(b, i, d).min(close);
+        if e <= s { break; }
+        elems.push((s, e));
+        i = e;
+    }
+    elems
+}
+
+/// Parse a function definition into (param names, single body expression).
+/// Returns `None` if `ft` is not a flattenable function definition.
+fn def_params_and_body(ft: &str, d: Dialect) -> Option<(Vec<String>, String)> {
+    let elems = split_elements(ft, d);
+    if elems.len() < 3 { return None; }
+    let head = &ft[elems[0].0..elems[0].1];
+    let close = ft.rfind(')').unwrap_or(ft.len());
+
+    let (params, body_idx) = if head == "define"
+        && ft[elems[1].0..elems[1].1].starts_with('(')
+    {
+        // Scheme curried define: (define (name p…) body…)
+        let sig = &ft[elems[1].0..elems[1].1];
+        let sig_elems = split_elements(sig, d);
+        if sig_elems.is_empty() { return None; }
+        let params = sig_elems.iter().skip(1).map(|(s, e)| sig[*s..*e].to_string()).collect();
+        (params, 2)
+    } else {
+        // (head name (args) body…)
+        let arglist = &ft[elems[2].0..elems[2].1];
+        if !arglist.starts_with('(') { return None; }
+        let params = split_elements(arglist, d).iter().map(|(s, e)| arglist[*s..*e].to_string()).collect();
+        (params, 3)
+    };
+
+    if elems.len() <= body_idx { return None; }
+    let body_text = ft[elems[body_idx].0..close].trim().to_string();
+    if body_text.is_empty() { return None; }
+    let body = if elems.len() - body_idx > 1 {
+        let kw = if d == Dialect::Generic && head == "define" { "begin" } else { "progn" };
+        format!("({kw} {body_text})")
+    } else {
+        body_text
+    };
+    Some((params, body))
+}
+
+/// Replace every whole-symbol occurrence of `name` with `repl`, skipping
+/// strings, comments and char literals.
+fn substitute_symbol(text: &str, name: &str, repl: &str, d: Dialect) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' => { let e = lisp_sitter_core::sexp_reader::skip_string(b, i).unwrap_or(b.len()); out.push_str(&text[i..e]); i = e; }
+            b';' => { let e = lisp_sitter_core::sexp_reader::skip_line_comment(b, i).unwrap_or(b.len()); out.push_str(&text[i..e]); i = e; }
+            b'#' if i + 1 < b.len() && b[i + 1] == b'|' => { let e = lisp_sitter_core::sexp_reader::skip_block_comment(b, i).unwrap_or(b.len()); out.push_str(&text[i..e]); i = e; }
+            b'#' if i + 1 < b.len() && b[i + 1] == b'\\' => { let e = skip_sexp_d(b, i, d); out.push_str(&text[i..e]); i = e; }
+            b'?' if d == Dialect::Elisp => { let e = skip_sexp_d(b, i, d); out.push_str(&text[i..e]); i = e; }
+            b'(' | b')' | b'\'' | b'`' | b',' => { out.push(b[i] as char); i += 1; }
+            c if c.is_ascii_whitespace() => { out.push(c as char); i += 1; }
+            _ => {
+                let s = i;
+                let e = skip_sym(b, i).max(s + 1);
+                let tok = &text[s..e];
+                if tok == name { out.push_str(repl); } else { out.push_str(tok); }
+                i = e;
+            }
+        }
+    }
+    out
+}
+
+/// Inline every `(sym arg…)` call site by substituting the call's arguments
+/// into `body`. Errors on argument-count mismatch.
+fn inline_calls(content: &str, sym: &str, params: &[String], body: &str, d: Dialect) -> Result<String, Error> {
+    let b = content.as_bytes();
+    let mut out = String::with_capacity(content.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' => { let e = lisp_sitter_core::sexp_reader::skip_string(b, i).unwrap_or(b.len()); out.push_str(&content[i..e]); i = e; }
+            b';' => { let e = lisp_sitter_core::sexp_reader::skip_line_comment(b, i).unwrap_or(b.len()); out.push_str(&content[i..e]); i = e; }
+            b'#' if i + 1 < b.len() && b[i + 1] == b'|' => { let e = lisp_sitter_core::sexp_reader::skip_block_comment(b, i).unwrap_or(b.len()); out.push_str(&content[i..e]); i = e; }
+            b'#' if i + 1 < b.len() && b[i + 1] == b'\\' => { let e = skip_sexp_d(b, i, d); out.push_str(&content[i..e]); i = e; }
+            b'?' if d == Dialect::Elisp => { let e = skip_sexp_d(b, i, d); out.push_str(&content[i..e]); i = e; }
+            b'(' => {
+                let ws = skip_sp(b, i + 1);
+                let sym_end = skip_sym(b, ws);
+                if sym_end > ws && &content[ws..sym_end] == sym {
+                    let call_end = skip_sexp_d(b, i, d);
+                    let call_text = &content[i..call_end];
+                    let args: Vec<String> = split_elements(call_text, d)
+                        .iter().skip(1).map(|(s, e)| call_text[*s..*e].to_string()).collect();
+                    if args.len() != params.len() {
+                        return Err(Error::Message(format!(
+                            "flatten: call to `{sym}` has {} argument(s) but the definition has {} parameter(s)",
+                            args.len(), params.len()
+                        )));
+                    }
+                    let mut inlined = body.to_string();
+                    for (pn, av) in params.iter().zip(args.iter()) {
+                        inlined = substitute_symbol(&inlined, pn, av, d);
+                    }
+                    out.push_str(&inlined);
+                    i = call_end;
+                } else {
+                    out.push('(');
+                    i += 1;
+                }
+            }
+            _ => { let l = utf8_len(b[i]); let e = (i + l).min(b.len()); out.push_str(&content[i..e]); i = e; }
+        }
+    }
+    Ok(out)
+}
+
 pub fn flatten(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
-    let c = ops_read(path)?; let p = reg.plugin_for_path(path)?; let ft = get_form_text(p, &c, sym)?;
-    let b = body_range(ft)?; let body = &ft[b.0..b.1];
-    let mut u = c.clone(); let pat = format!("({}", sym); let def_start = c.find(ft).unwrap_or(0);
-    loop { let pos = u[..].find(&pat); let a = match pos { Some(p) => p, None => break };
-        if a >= def_start && a < def_start + ft.len() { let skip_to = a + 1; let _ = skip_to; /* skip def */ let next = if a + 1 < u.len() { a + 1 } else { break }; u = u[..a].to_string() + &u[next..]; continue; }
-        let se = skip_sexp(u.as_bytes(), a); let mut n = String::with_capacity(u.len());
-        n.push_str(&u[..a]); n.push_str(body.trim()); n.push_str(&u[se..]); u = n; }
-    let u = remove_form(reg, path, sym, true)?;
-    p.check_file(&u).map_err(|e| match e { Error::Syntax(d) => Error::SyntaxAfterEdit { operation: "flatten".into(), detail: d }, o => o, })?; Ok(u)
+    let c = ops_read(path)?;
+    let p = reg.plugin_for_path(path)?;
+    let d = dialect_of(p);
+    let ft = get_form_text(p, &c, sym)?.to_string();
+
+    let (params, body) = def_params_and_body(&ft, d).ok_or_else(|| {
+        Error::Message(format!("flatten: `{sym}` is not a flattenable function definition"))
+    })?;
+    if params.iter().any(|pn| pn.starts_with('&') || pn.starts_with('(') || pn.is_empty()) {
+        return Err(Error::Message(
+            "flatten supports only simple positional parameters (no &rest/&optional/&key/destructuring)".into(),
+        ));
+    }
+    if replace_head_symbol(&body, sym, "\u{0}", d, RefsMode::HeadOnly) != body {
+        return Err(Error::Message(format!("flatten: `{sym}` is recursive; cannot inline")));
+    }
+
+    // Inline call sites first, then remove the (now-unreferenced) definition.
+    let inlined = inline_calls(&c, sym, &params, &body, d)?;
+    let (s, e) = p.node_bounds(&inlined, sym)?;
+    let rs = (0..s)
+        .rev()
+        .find(|&i| !inlined.as_bytes()[i].is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(s);
+    let mut u = String::with_capacity(inlined.len());
+    u.push_str(&inlined[..rs]);
+    if rs < s { u.push('\n'); }
+    u.push_str(&inlined[e..]);
+
+    p.check_file(&u).map_err(|e| match e {
+        Error::Syntax(detail) => Error::SyntaxAfterEdit { operation: "flatten".into(), detail },
+        o => o,
+    })?;
+    Ok(u)
 }
 
 // ── convert-let ────────────────────────────────────────────────
@@ -208,7 +461,7 @@ mod tests {
         let reg = default_registry();
         let (dir, path) = tmp_file("rename",
             "(defun foo ()\n  1)\n\n(defun bar ()\n  (foo))\n");
-        let result = rename(&reg, path.to_str().unwrap(), "foo", "baz").unwrap();
+        let result = rename(&reg, path.to_str().unwrap(), "foo", "baz", RefsMode::HeadAndSharp).unwrap();
         assert!(result.contains("(defun baz ()"));
         assert!(result.contains("(baz)"));
         assert!(result.contains("(defun bar ()"));
@@ -266,11 +519,15 @@ mod tests {
         let reg = default_registry();
         let (dir, path) = tmp_file("extract",
             "(defun foo (x)\n  (+ x 1))\n");
-        // extract inserts at __start__ which requires empty file — expect StartAnchorOnNonempty error
+        // extract inserts the new helper after the original definition
         let result = extract(&reg, path.to_str().unwrap(), "foo", "(+ x 1)", "add1", &["x"]);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("__start__") || err.contains("anchor"), "got: {err}");
+        assert!(result.is_ok(), "extract failed: {:?}", result.err());
+        let got = result.unwrap();
+        assert!(got.contains("defun add1"), "should define add1: {got}");
+        assert!(got.contains("(add1 x)"), "should call add1: {got}");
+        // The original (+ x 1) is now only in the extracted definition
+        let foo_line: Vec<&str> = got.lines().filter(|l| l.trim().starts_with("(defun foo")).collect();
+        assert_eq!(foo_line.len(), 1, "foo defined once: {got}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -336,9 +593,31 @@ mod tests {
         let (dir, path) = tmp_file("flatten",
             "(defun add1 (x)\n  (+ x 1))\n\n(defun foo ()\n  (add1 2))\n");
         let result = flatten(&reg, path.to_str().unwrap(), "add1").unwrap();
-        // flatten removes the definition but currently has a bug where inlining
-        // is discarded because remove_form re-reads from the original file
-        assert!(!result.contains("(defun add1"));
+        // The definition is removed AND the call site is inlined with the
+        // argument substituted: (add1 2) -> (+ 2 1).
+        assert!(!result.contains("(defun add1"), "definition should be gone: {result}");
+        assert!(result.contains("(+ 2 1)"), "call should be inlined: {result}");
+        assert!(!result.contains("(add1 2)"), "call should not remain: {result}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_flatten_recursive_errors() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file("flatten_rec",
+            "(defun fact (n)\n  (if (= n 0) 1 (* n (fact (- n 1)))))\n\n(defun use ()\n  (fact 3))\n");
+        let result = flatten(&reg, path.to_str().unwrap(), "fact");
+        assert!(result.is_err(), "recursive flatten should error");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_flatten_arity_mismatch_errors() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file("flatten_arity",
+            "(defun add (a b)\n  (+ a b))\n\n(defun use ()\n  (add 1))\n");
+        let result = flatten(&reg, path.to_str().unwrap(), "add");
+        assert!(result.is_err(), "arity mismatch should error");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -435,10 +714,39 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_call_sites() {
+    fn test_replace_head_symbol() {
         let c = "(foo 1)\n(bar (foo 2))\n(ignore)";
-        let result = replace_call_sites(c, "foo", "baz");
+        let result = replace_head_symbol(c, "foo", "baz", Dialect::Generic, RefsMode::HeadOnly);
         assert_eq!(result, "(baz 1)\n(bar (baz 2))\n(ignore)");
+    }
+
+    #[test]
+    fn test_replace_head_symbol_skips_strings_and_comments() {
+        let c = "(foo)\n(bar (message \"call (foo) here\")) ; foo in comment\n";
+        let result = replace_head_symbol(c, "foo", "baz", Dialect::Generic, RefsMode::HeadOnly);
+        assert!(result.contains("(baz)"));
+        assert!(result.contains("\"call (foo) here\""), "string must be untouched: {result}");
+        assert!(result.contains("; foo in comment"), "comment must be untouched: {result}");
+    }
+
+    #[test]
+    fn test_replace_head_symbol_sharp_refs() {
+        // HeadAndSharp: renames #'foo + (foo), but not plain 'foo
+        let c = "(foo)\n(add-hook 'h #'foo)\n(setq x 'foo)";
+        let got = replace_head_symbol(c, "foo", "baz", Dialect::Generic, RefsMode::HeadAndSharp);
+        assert!(got.contains("(baz)"), "{got}");
+        assert!(got.contains("#'baz"), "#' should be renamed: {got}");
+        assert!(got.contains("'foo"), "plain 'foo should not be renamed without --refs: {got}");
+    }
+
+    #[test]
+    fn test_replace_head_symbol_all_refs() {
+        // AllRefs: renames #'foo, 'foo, and (foo)
+        let c = "(foo)\n(add-hook 'h #'foo)\n(setq sym 'foo)";
+        let got = replace_head_symbol(c, "foo", "baz", Dialect::Generic, RefsMode::AllRefs);
+        assert!(got.contains("(baz)"), "{got}");
+        assert!(got.contains("#'baz"), "{got}");
+        assert!(got.contains("'baz"), "plain 'foo should be renamed with --refs: {got}");
     }
 
     #[test]

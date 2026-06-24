@@ -81,7 +81,7 @@ fn find_insert_position(
         ));
     }
     if is_anchor_end(after_symbol) {
-        return Ok(end_of_forms(plugin, content)?);
+        return end_of_forms(plugin, content);
     }
     let (_, end) = plugin.node_bounds(content, after_symbol)?;
     Ok(end)

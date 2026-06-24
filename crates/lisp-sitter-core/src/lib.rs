@@ -1,4 +1,5 @@
 pub mod anchors;
+pub mod definers;
 pub mod edit;
 pub mod error;
 pub mod fmt;
@@ -11,10 +12,12 @@ pub mod sexp_scan;
 pub mod treesit_util;
 
 pub use anchors::{is_anchor_end, is_anchor_start, ANCHOR_END, ANCHOR_START};
+pub use definers::{Definer, DefinerSet, NameStrategy};
 pub use edit::{get_form_text, insert_after, replace_node};
 pub use error::{Error, Result};
-pub use fmt::format_source;
+pub use fmt::{format_source, format_source_aligned, format_source_in};
+pub use treesit_util::has_docstring;
 pub use plugin::{FormInfo, LanguagePlugin};
 pub use registry::Registry;
 pub use position::{line_column, pos_label};
-pub use sexp_reader::complete_form;
+pub use sexp_reader::{complete_form, complete_form_in, Dialect};

@@ -105,7 +105,7 @@ lisp-sitter completions fish | source    # fish
 
 | Command | Description |
 |---------|-------------|
-| `tree PATH` | Outline of top-level forms, one per line (`defun:foo@12:1`) |
+| `tree PATH` | Outline of top-level definitions, one per line (`defun:foo@12:1`). `--all` also lists non-definition forms (`require`, `provide`, `setq`, …) |
 | `bounds PATH SYMBOL` | Byte positions `START:END` for a named form |
 | `get PATH SYMBOL` | Print the full text of a named top-level form |
 | `replace PATH SYMBOL` | Replace a form; requires `--body` or `--body-file` |
@@ -117,7 +117,7 @@ lisp-sitter completions fish | source    # fish
 | `move PATH SYMBOL --after ANCHOR` | Reorder a form after another symbol, `__start__`, or `__end__` |
 | `substitute PATH SYMBOL` | Replace a sub-expression inside a form using `--pattern` / `--replacement` |
 | `extract PATH SYMBOL` | Extract a sub-expression into a new function |
-| `rename PATH OLD NEW` | Rename a form and its call sites |
+| `rename PATH OLD NEW` | Rename a form, its call sites, and `'old`/`#'old` references |
 | `wrap PATH SYMBOL` | Wrap body in `progn`, `let`, or `if` |
 | `check PATH` | Validate file → `OK` or syntax error on stderr |
 | `check PATH --semantic` | Deep validation (docstrings, missing provide) |
@@ -156,16 +156,26 @@ Exit code `0` on success, `1` on error.
 
 Language is inferred from file extension. Override with `LISP_SITTER_LANG=elisp|commonlisp|scheme` or the `--lang` global flag.
 
-Custom extension mappings can be set in `~/.lisp-sitter.json` or `~/.config/lisp-sitter/config.json`:
+Custom extension mappings and project-specific definer macros can be set in
+`~/.lisp-sitter.json` or `~/.config/lisp-sitter/config.json`:
 
 ```json
 {
   "extensions": {
     ".foo": "elisp",
     ".bar": "scheme"
+  },
+  "extra_definers": {
+    "elisp": ["define-widget", "transient-define-prefix"],
+    "commonlisp": ["define-app-command"]
   }
 }
 ```
+
+`extra_definers` registers additional top-level definition forms per language
+(`elisp`, `commonlisp`, `scheme`) so your own def-macros are listed by `tree` and
+addressable by `bounds`/`get`/`replace`/`rename`. Each is treated like `defun`/
+`define` — the name is the second element.
 
 ## Agent workflow
 

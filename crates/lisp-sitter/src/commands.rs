@@ -9,7 +9,9 @@ use lisp_sitter::ops;
 
 pub fn eval(path: &str) -> Result<()> {
     match lisp_sitter::eval::eval_file(path) {
-        Ok((s, e, ok)) => { if !s.is_empty() { print!("{s}"); } if !e.is_empty() { eprint!("{e}"); }
+        Ok((s, e, ok)) => {
+            if !s.is_empty() { print!("{s}"); }
+            if !e.is_empty() { eprint!("{e}"); }
             if ok { println!("OK"); Ok(()) } else { std::process::exit(1); } }
         Err(e) => { eprintln!("{e}"); std::process::exit(1); }
     }
@@ -29,7 +31,8 @@ pub fn check_semantic(reg: &Registry, path: &str) -> Result<()> {
 
 pub fn wrap(reg: &Registry, path: &str, sym: &str, wrapper: &str, bindings: Option<&str>, cond: Option<&str>, write: bool) -> Result<()> {
     let mut xs: Vec<(&str, &str)> = Vec::new();
-    if let Some(b) = bindings { xs.push(("bindings", b)); } if let Some(c) = cond { xs.push(("condition", c)); }
+    if let Some(b) = bindings { xs.push(("bindings", b)); }
+    if let Some(c) = cond { xs.push(("condition", c)); }
     let u = lisp_sitter::transform::wrap_body(reg, path, sym, wrapper, &xs)?;
     if write { ops::atomic_write(path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); }
     Ok(())
@@ -65,7 +68,8 @@ fn expand_paths(path: &str) -> Vec<String> {
 }
 
 fn glob_match(pat: &str, name: &str) -> bool {
-    if pat == "*" || pat == "*.*" { return true; } if !pat.contains('*') { return pat == name; }
+    if pat == "*" || pat == "*.*" { return true; }
+    if !pat.contains('*') { return pat == name; }
     let p: Vec<&str> = pat.split('*').collect(); if p.len() == 2 { name.starts_with(p[0]) && name.ends_with(p[1]) } else { p.iter().all(|s| name.contains(s)) }
 }
 
@@ -157,9 +161,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lisp-sitter-cmd-test-glob-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&dir.join("a.el"), "(defun a ())\n").unwrap();
-        std::fs::write(&dir.join("b.el"), "(defun b ())\n").unwrap();
-        std::fs::write(&dir.join("c.txt"), "text").unwrap();
+        std::fs::write(dir.join("a.el"), "(defun a ())\n").unwrap();
+        std::fs::write(dir.join("b.el"), "(defun b ())\n").unwrap();
+        std::fs::write(dir.join("c.txt"), "text").unwrap();
 
         let pat = format!("{}/*.el", dir.to_str().unwrap());
         let paths = expand_paths(&pat);
@@ -183,7 +187,7 @@ mod tests {
     fn test_init_git_hook_in_temp_repo() {
         let dir = std::env::temp_dir().join(format!("lisp-sitter-cmd-test-hook-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir.join(".git").join("hooks")).unwrap();
+        std::fs::create_dir_all(dir.join(".git").join("hooks")).unwrap();
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
         let result = init_git_hook();
