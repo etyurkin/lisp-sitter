@@ -121,8 +121,9 @@ fn read_text(inline: Option<String>, file: Option<String>) -> Result<String> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+async fn main() -> Result<()> { run(Cli::parse()).await }
+
+async fn run(cli: Cli) -> Result<()> {
     if let Some(ref lang) = cli.lang { std::env::set_var("LISP_SITTER_LANG", lang); }
     let reg = default_registry();
     let j = cli.json; let cf = cli.confirm;
@@ -182,4 +183,406 @@ async fn main() -> Result<()> {
         Command::Mcp { command } => match command { McpCommand::Serve => { mcp::serve_stdio(reg).await?; }, McpCommand::Install { cursor, claude } => { mcp::install_config(cursor, claude)?; } },
     };
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_cli_tree_short_args() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "tree", path.to_str().unwrap()]).unwrap();
+        assert!(matches!(cli.command, Command::Tree { .. }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_cli_bounds() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "bounds", "foo.el", "my-func"]).unwrap();
+        assert!(matches!(cli.command, Command::Bounds { .. }));
+    }
+
+    #[test]
+    fn test_cli_replace() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "replace", "foo.el", "my-func", "--body", "(defun my-func () 1)"]).unwrap();
+        assert!(matches!(cli.command, Command::Replace { .. }));
+    }
+
+    #[test]
+    fn test_cli_insert() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "insert", "foo.el", "target", "--node", "(defun x ())"]).unwrap();
+        assert!(matches!(cli.command, Command::Insert { .. }));
+    }
+
+    #[test]
+    fn test_cli_get() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "get", "foo.el", "my-func"]).unwrap();
+        assert!(matches!(cli.command, Command::Get { .. }));
+    }
+
+    #[test]
+    fn test_cli_complete() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "complete", "--lang", "elisp", "--body", "(defun foo"]).unwrap();
+        assert!(matches!(cli.command, Command::Complete { .. }));
+    }
+
+    #[test]
+    fn test_cli_fmt() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "fmt", "foo.el"]).unwrap();
+        assert!(matches!(cli.command, Command::Fmt { .. }));
+    }
+
+    #[test]
+    fn test_cli_eval() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "eval", "foo.el"]).unwrap();
+        assert!(matches!(cli.command, Command::Eval { .. }));
+    }
+
+    #[test]
+    fn test_cli_rename() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "rename", "foo.el", "old", "new"]).unwrap();
+        assert!(matches!(cli.command, Command::Rename { .. }));
+    }
+
+    #[test]
+    fn test_cli_wrap() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "wrap", "foo.el", "my-func", "--in", "progn"]).unwrap();
+        assert!(matches!(cli.command, Command::Wrap { .. }));
+    }
+
+    #[test]
+    fn test_cli_remove() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "remove", "foo.el", "dead-func"]).unwrap();
+        assert!(matches!(cli.command, Command::Remove { .. }));
+    }
+
+    #[test]
+    fn test_cli_move() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "move", "foo.el", "my-func", "other"]).unwrap();
+        assert!(matches!(cli.command, Command::Move { .. }));
+    }
+
+    #[test]
+    fn test_cli_substitute() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "substitute", "foo.el", "my-func", "--pattern", "x", "--replacement", "y"]).unwrap();
+        assert!(matches!(cli.command, Command::Substitute { .. }));
+    }
+
+    #[test]
+    fn test_cli_extract() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "extract", "foo.el", "my-func", "--pattern", "(+ x 1)", "--name", "add1"]).unwrap();
+        assert!(matches!(cli.command, Command::Extract { .. }));
+    }
+
+    #[test]
+    fn test_cli_callers() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "callers", "foo.el", "my-func"]).unwrap();
+        assert!(matches!(cli.command, Command::Callers { .. }));
+    }
+
+    #[test]
+    fn test_cli_instrument() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "instrument", "foo.el", "my-func"]).unwrap();
+        assert!(matches!(cli.command, Command::Instrument { .. }));
+    }
+
+    #[test]
+    fn test_cli_flatten() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "flatten", "foo.el", "helper"]).unwrap();
+        assert!(matches!(cli.command, Command::Flatten { .. }));
+    }
+
+    #[test]
+    fn test_cli_convert_let() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "convert-let", "foo.el", "my-func", "--to", "let*"]).unwrap();
+        assert!(matches!(cli.command, Command::ConvertLet { .. }));
+    }
+
+    #[test]
+    fn test_cli_check() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "check", "foo.el"]).unwrap();
+        assert!(matches!(cli.command, Command::Check { .. }));
+    }
+
+    #[test]
+    fn test_cli_check_node() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "check-node", "--lang", "elisp", "--body", "(defun foo ())"]).unwrap();
+        assert!(matches!(cli.command, Command::CheckNode { .. }));
+    }
+
+    #[test]
+    fn test_cli_completions() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "completions", "bash"]).unwrap();
+        assert!(matches!(cli.command, Command::Completions { .. }));
+    }
+
+    #[test]
+    fn test_cli_init_git_hook() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "init-git-hook"]).unwrap();
+        assert!(matches!(cli.command, Command::InitGitHook));
+    }
+
+    #[test]
+    fn test_cli_mcp_serve() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "mcp", "serve"]).unwrap();
+        assert!(matches!(cli.command, Command::Mcp { command: McpCommand::Serve }));
+    }
+
+    #[test]
+    fn test_cli_mcp_install() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "mcp", "install", "--cursor"]).unwrap();
+        assert!(matches!(cli.command, Command::Mcp { command: McpCommand::Install { .. } }));
+    }
+
+    #[test]
+    fn test_cli_unknown_subcommand() {
+        let result = Cli::try_parse_from(&["lisp-sitter", "unknown-command"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cli_missing_args() {
+        let result = Cli::try_parse_from(&["lisp-sitter", "tree"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_text_inline() {
+        assert_eq!(read_text(Some("hello".into()), None).unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_read_text_file() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("body.txt");
+        std::fs::write(&path, "file content").unwrap();
+
+        assert_eq!(read_text(None, Some(path.to_str().unwrap().into())).unwrap(), "file content");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_text_no_input() {
+        let result = read_text(None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_completions_shell() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "completions", "bash"]).unwrap();
+        assert!(matches!(cli.command, Command::Completions { shell } if shell == "bash"));
+    }
+
+    #[tokio::test]
+    async fn test_run_tree_valid_file() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+
+        let cli = Cli::try_parse_from(&["lisp-sitter", "tree", path.to_str().unwrap()]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok(), "run(tree) failed: {:?}", result.err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_bounds_valid_file() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-bounds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+
+        let cli = Cli::try_parse_from(&["lisp-sitter", "bounds", path.to_str().unwrap(), "foo"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok(), "run(bounds) failed: {:?}", result.err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_check_valid_file() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+
+        let cli = Cli::try_parse_from(&["lisp-sitter", "check", path.to_str().unwrap()]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_error_returns_err() {
+        // .txt extension avoids the empty-novel.el shortcut
+        let cli = Cli::try_parse_from(&["lisp-sitter", "check", "/nonexistent.txt"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_run_get_form() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-get-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "get", path.to_str().unwrap(), "foo"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_complete() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "complete", "--lang", "elisp", "--body", "(defun foo (x)"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_run_fmt() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-fmt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "fmt", path.to_str().unwrap()]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_rename() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "rename", path.to_str().unwrap(), "foo", "bar"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_remove() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-remove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "remove", path.to_str().unwrap(), "foo"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_substitute() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-subst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo (x) (+ x 1))\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "substitute", path.to_str().unwrap(), "foo", "--pattern", "(+ x 1)", "--replacement", "(* x 2)"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_instrument() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-instr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  1)\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "instrument", path.to_str().unwrap(), "foo", "--with", "(message \"x\")"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_callers() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-callers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun a () (b))\n\n(defun b () 1)\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "callers", path.to_str().unwrap(), "b"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_wrap() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-wrap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo ()\n  (+ 1 2))\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "wrap", path.to_str().unwrap(), "foo", "--in", "progn"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_check_node() {
+        let cli = Cli::try_parse_from(&["lisp-sitter", "check-node", "--lang", "elisp", "--body", "(defun foo ())"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_run_convert_let() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-let-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo (x y)\n  (let ((a 1) (b 2)) (+ a b)))\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "convert-let", path.to_str().unwrap(), "foo", "--to", "let*"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_callers_json() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-callers-json-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun a () (b))\n\n(defun b () 1)\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "--json", "callers", path.to_str().unwrap(), "b"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_run_flatten() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-main-test-run-flat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun add1 (x) (+ x 1))\n\n(defun foo () (add1 2))\n").unwrap();
+        let cli = Cli::try_parse_from(&["lisp-sitter", "flatten", path.to_str().unwrap(), "add1"]).unwrap();
+        let result = run(cli).await;
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

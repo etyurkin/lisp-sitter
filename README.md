@@ -214,6 +214,22 @@ make lint     # clippy
 make fmt      # rustfmt
 ```
 
+### Tests
+
+```bash
+cargo test                          # unit tests (169+)
+cargo test -p lisp-sitter           # main crate only
+```
+
+For coverage reports (optional — not required for development):
+
+```bash
+cargo install cargo-llvm-cov
+cargo llvm-cov --workspace --ignore-filename-regex "tests/explore" --open
+```
+
+External Lisp interpreters (emacs, sbcl, guile) are not required — the `eval` module uses a mockable `Runner` trait. No external test framework is needed for basic testing.
+
 ### Workspace layout
 
 ```

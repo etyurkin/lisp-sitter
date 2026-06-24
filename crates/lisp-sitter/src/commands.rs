@@ -78,3 +78,118 @@ fn walkdir(path: &str) -> std::io::Result<Vec<String>> {
     while let Some(dir) = stack.pop() { if let Ok(e) = std::fs::read_dir(&dir) { for entry in e.flatten() { let p = entry.path(); if p.is_dir() { stack.push(p); } else { r.push(p.to_string_lossy().to_string()); } } } }
     Ok(r)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_lisp_file() {
+        assert!(is_lisp_file("foo.el"));
+        assert!(is_lisp_file("foo.lisp"));
+        assert!(is_lisp_file("foo.cl"));
+        assert!(is_lisp_file("foo.scm"));
+        assert!(is_lisp_file("foo.ss"));
+        assert!(is_lisp_file("foo.sld"));
+        assert!(!is_lisp_file("foo.txt"));
+        assert!(!is_lisp_file("foo.rs"));
+        assert!(!is_lisp_file("foo"));
+    }
+
+    #[test]
+    fn test_glob_match() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*.*", "foo.bar"));
+        assert!(glob_match("*.el", "test.el"));
+        assert!(!glob_match("*.el", "test.rs"));
+        assert!(glob_match("test.*", "test.el"));
+        assert!(glob_match("foo*bar", "fooXYZbar"));
+        assert!(glob_match("test.el", "test.el"));
+        assert!(!glob_match("test.el", "other.el"));
+    }
+
+    #[test]
+    fn test_check_valid_file() {
+        let reg = crate::default_registry();
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-cmd-test-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo () 1)\n").unwrap();
+        check(&reg, path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_wrap_body() {
+        use lisp_sitter::ops;
+        let reg = crate::default_registry();
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-cmd-test-wrap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        let content = "(defun foo ()\n  (+ 1 2))\n";
+        ops::atomic_write(path.to_str().unwrap(), content).unwrap();
+
+        // wrap in progn (no write, just check output)
+        wrap(&reg, path.to_str().unwrap(), "foo", "progn", None, None, false).unwrap();
+        // no write flag was set, content unchanged
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_expand_paths_single_file() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-cmd-test-exp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo () 1)\n").unwrap();
+
+        let paths = expand_paths(path.to_str().unwrap());
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("test.el"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_expand_paths_glob() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-cmd-test-glob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&dir.join("a.el"), "(defun a ())\n").unwrap();
+        std::fs::write(&dir.join("b.el"), "(defun b ())\n").unwrap();
+        std::fs::write(&dir.join("c.txt"), "text").unwrap();
+
+        let pat = format!("{}/*.el", dir.to_str().unwrap());
+        let paths = expand_paths(&pat);
+        assert_eq!(paths.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_check_semantic_no_warnings() {
+        let reg = crate::default_registry();
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-cmd-test-sem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo () 1)\n").unwrap();
+        check_semantic(&reg, path.to_str().unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_init_git_hook_in_temp_repo() {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-cmd-test-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir.join(".git").join("hooks")).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let result = init_git_hook();
+        assert!(result.is_ok());
+        assert!(dir.join(".git/hooks/pre-commit").exists());
+        std::env::set_current_dir(cwd).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

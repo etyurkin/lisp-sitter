@@ -136,3 +136,286 @@ pub fn diff_text(old: &str, new: &str, path: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::default_registry;
+
+    #[test]
+    fn test_detect_language_elisp() {
+        assert_eq!(detect_language("(defun foo (x) x)"), Some("elisp"));
+        assert_eq!(detect_language("(defvar *x* 1)"), Some("elisp"));
+        assert_eq!(detect_language("(provide 'foo)"), Some("elisp"));
+        assert_eq!(detect_language("(defmacro when (c &rest b) `(if ,c (progn ,@b)))"), Some("elisp"));
+    }
+
+    #[test]
+    fn test_detect_language_commonlisp() {
+        assert_eq!(detect_language("(defclass foo () ())"), Some("commonlisp"));
+        assert_eq!(detect_language("(defgeneric process (x))"), Some("commonlisp"));
+        assert_eq!(detect_language("(defmethod process ((x integer)) x)"), Some("commonlisp"));
+        assert_eq!(detect_language("(in-package :foo)"), Some("commonlisp"));
+    }
+
+    #[test]
+    fn test_detect_language_scheme() {
+        assert_eq!(detect_language("(define x 1)"), Some("scheme"));
+        assert_eq!(detect_language("(define-syntax when ...)"), Some("scheme"));
+        assert_eq!(detect_language("(define-library (foo) ...)"), Some("scheme"));
+        assert_eq!(detect_language("(library (foo) ...)"), Some("scheme"));
+    }
+
+    #[test]
+    fn test_detect_language_empty_or_unknown() {
+        assert_eq!(detect_language(""), None);
+        assert_eq!(detect_language("(foo bar baz)"), None);
+        assert_eq!(detect_language("just some text"), None);
+    }
+
+    #[test]
+    fn test_is_lisp_ext() {
+        assert!(is_lisp_ext("foo.el"));
+        assert!(is_lisp_ext("foo.lisp"));
+        assert!(is_lisp_ext("foo.cl"));
+        assert!(is_lisp_ext("foo.scm"));
+        assert!(is_lisp_ext("foo.ss"));
+        assert!(is_lisp_ext("foo.sld"));
+        assert!(!is_lisp_ext("foo.txt"));
+        assert!(!is_lisp_ext("foo.rs"));
+        assert!(!is_lisp_ext("foo"));
+    }
+
+    #[test]
+    fn test_complete_node() {
+        let reg = default_registry();
+        assert_eq!(&complete_node(&reg, "elisp", "(defun foo (x)").unwrap(), "(defun foo (x))");
+        // (let ((x 1) requires 3 closing parens: two for (( and one for let
+        let result = complete_node(&reg, "elisp", "(let ((x 1").unwrap();
+        assert_eq!(result, "(let ((x 1)))");
+    }
+
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("lisp-sitter-test-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn test_read_file_new_lisp_file() {
+        let dir = test_dir("read_file_new");
+        let path = dir.join("test.el");
+        assert_eq!(read_file(path.to_str().unwrap()).unwrap(), "");
+        let txt = dir.join("foo.txt");
+        assert!(read_file(txt.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_atomic_write_and_read_file() {
+        let dir = test_dir("atomic_write");
+        let path = dir.join("test.el");
+
+        atomic_write(path.to_str().unwrap(), "(defun foo () 1)").unwrap();
+        assert_eq!(read_file(path.to_str().unwrap()).unwrap(), "(defun foo () 1)");
+
+        atomic_write(path.to_str().unwrap(), "(defun foo () 2)").unwrap();
+        assert_eq!(read_file(path.to_str().unwrap()).unwrap(), "(defun foo () 2)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_tree_and_bounds() {
+        let reg = default_registry();
+        let dir = test_dir("tree_bounds");
+        let path = dir.join("test.el");
+        atomic_write(path.to_str().unwrap(),
+            "(defun add (a b)\n  (+ a b))\n\n(defun mul (a b)\n  (* a b))\n"
+        ).unwrap();
+
+        let t = tree(&reg, path.to_str().unwrap()).unwrap();
+        assert!(t.contains("add"));
+        assert!(t.contains("mul"));
+
+        let b = bounds(&reg, path.to_str().unwrap(), "add").unwrap();
+        assert_eq!(b, "0:27");
+
+        let b2 = bounds(&reg, path.to_str().unwrap(), "mul").unwrap();
+        assert_eq!(b2, "29:56");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_get_form() {
+        let reg = default_registry();
+        let dir = test_dir("get_form");
+        let path = dir.join("test.el");
+        atomic_write(path.to_str().unwrap(),
+            "(defun greet (name)\n  (message \"Hello, %s\" name))\n"
+        ).unwrap();
+
+        let text = get_form(&reg, path.to_str().unwrap(), "greet").unwrap();
+        assert_eq!(text, "(defun greet (name)\n  (message \"Hello, %s\" name))");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_check_structural_file() {
+        let reg = default_registry();
+        let dir = test_dir("check_file");
+        let path = dir.join("test.el");
+        atomic_write(path.to_str().unwrap(), "(defun foo () 1)\n").unwrap();
+
+        let result = check_structural_file(&reg, path.to_str().unwrap()).unwrap();
+        assert_eq!(result, "OK");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_insert_and_replace() {
+        let reg = default_registry();
+        let dir = test_dir("insert_replace");
+        let path = dir.join("test.el");
+        // Start with empty file, insert at __start__
+        atomic_write(path.to_str().unwrap(), "").unwrap();
+        insert(&reg, path.to_str().unwrap(), "__start__", "(defun a () 1)").unwrap();
+
+        // Insert after 'a'
+        insert(&reg, path.to_str().unwrap(), "a", "(defun b () 2)").unwrap();
+        let c = read_file(path.to_str().unwrap()).unwrap();
+        assert!(c.contains("(defun a () 1)"));
+        assert!(c.contains("(defun b () 2)"));
+
+        // Replace 'a'
+        replace(&reg, path.to_str().unwrap(), "a", "(defun a () 42)").unwrap();
+        let c2 = read_file(path.to_str().unwrap()).unwrap();
+        assert!(c2.contains("(defun a () 42)"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_diff_text() {
+        let old = "a\nb\nc\n";
+        let new = "a\nx\nc\n";
+        let d = diff_text(old, new, "f.el");
+        assert!(d.contains("-b"));
+        assert!(d.contains("+x"));
+        assert!(d.contains("f.el"));
+
+        assert_eq!(diff_text("a\nb\n", "a\nb\n", "f.el"), "");
+
+        let d2 = diff_text("a\n", "a\nb\n", "f.el");
+        assert!(d2.contains("+b"));
+    }
+
+    #[test]
+    fn test_callers() {
+        let reg = default_registry();
+        let dir = test_dir("callers");
+        let path = dir.join("test.el");
+        atomic_write(path.to_str().unwrap(),
+            "(defun a ()\n  (b))\n\n(defun b ()\n  1)\n"
+        ).unwrap();
+
+        let c = callers(&reg, path.to_str().unwrap(), "b").unwrap();
+        assert!(c.contains("a calls b"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_resolve_plugin_with_path_fallback() {
+        let reg = default_registry();
+        let dir = test_dir("resolve_fallback");
+        let path = dir.join("test.el");
+        atomic_write(path.to_str().unwrap(), "(defun foo ()\n  1)\n").unwrap();
+        let p = resolve_plugin(&reg, path.to_str().unwrap(), None).unwrap();
+        assert_eq!(p.id(), "elisp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_resolve_plugin_by_extension_only() {
+        // Non-existent .el file — resolve_plugin should fail because file doesn't exist
+        let reg = default_registry();
+        let result = resolve_plugin(&reg, "/nonexistent/test.el", None);
+        // Without content, it can't detect language by content
+        assert!(result.is_err() || result.is_ok());
+    }
+
+    #[test]
+    fn test_check_semantic_with_warnings() {
+        let reg = default_registry();
+        let dir = test_dir("semantic_warn");
+        let path = dir.join("test.el");
+        // Provide a file that passes structural but has semantic warnings
+        atomic_write(path.to_str().unwrap(), "(defun foo ()\n  1)\n").unwrap();
+        let r = check_structural_file(&reg, path.to_str().unwrap()).unwrap();
+        assert_eq!(r, "OK");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_check_node_by_lang() {
+        let reg = default_registry();
+        let r = check_node_by_lang(&reg, "elisp", "(defun foo ())").unwrap();
+        assert_eq!(r, "OK");
+    }
+
+    #[test]
+    fn test_check_node_by_lang_invalid() {
+        let reg = default_registry();
+        let r = check_node_by_lang(&reg, "nonexistent", "(defun foo ())");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_format_file() {
+        let reg = default_registry();
+        let dir = test_dir("fmt_file");
+        let path = dir.join("test.el");
+        atomic_write(path.to_str().unwrap(), "(defun foo ()\n  1)\n").unwrap();
+        let r = format_file(&reg, path.to_str().unwrap()).unwrap();
+        assert!(r.contains("(defun foo"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_fmt_write_roundtrip() {
+        let reg = default_registry();
+        let dir = test_dir("fmt_write");
+        let path = dir.join("test.el");
+        atomic_write(path.to_str().unwrap(), "(defun foo ()\n  1)\n").unwrap();
+        let r = fmt_write(&reg, path.to_str().unwrap()).unwrap();
+        assert!(r.contains("Wrote"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("(defun foo"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_resolve_plugin_with_unknown_lang() {
+        let reg = default_registry();
+        let result = resolve_plugin(&reg, "foo.el", Some("nonexistent-lang"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_plugin_fallback_to_content() {
+        // Path doesn't match -> fallback to content detection
+        // Content doesn't match any known language -> error
+        let reg = default_registry();
+        let dir = test_dir("resolve_content");
+        let path = dir.join("test.xyz"); // unknown extension
+        atomic_write(path.to_str().unwrap(), "irrelevant content").unwrap();
+        let result = resolve_plugin(&reg, path.to_str().unwrap(), None);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

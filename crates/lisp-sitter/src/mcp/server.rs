@@ -206,3 +206,347 @@ pub async fn serve_stdio(reg: Registry) -> anyhow::Result<()> {
     service.waiting().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::default_registry;
+    use rmcp::handler::server::wrapper::Parameters;
+
+    fn mcp() -> LispSitterMcp {
+        LispSitterMcp::new(default_registry())
+    }
+
+    fn tmp_el(name: &str, content: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-mcp-test-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.el");
+        std::fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn test_check_structural_file() {
+        let s = mcp();
+        let (dir, p) = tmp_el("check_file", "(defun foo () 1)\n");
+        let r = s.check_structural_file(Parameters(PathArgs { path: p.to_str().unwrap().to_string(), semantic: false })).await;
+        assert_eq!(r.unwrap(), "OK");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_check_structural_node() {
+        let s = mcp();
+        let (dir, p) = tmp_el("check_node", "(defun foo () 1)\n");
+        let r = s.check_structural_node(Parameters(PathNodeArgs { path: p.to_str().unwrap().to_string(), node: "(defun foo () 1)".into() })).await;
+        assert_eq!(r.unwrap(), "OK");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_tree() {
+        let s = mcp();
+        let (dir, p) = tmp_el("tree", "(defun foo () 1)\n");
+        let r = s.structural_tree(Parameters(PathDepthArgs { path: p.to_str().unwrap().to_string(), depth: Some(1) })).await;
+        let out = r.unwrap();
+        assert!(out.contains("foo"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_bounds() {
+        let s = mcp();
+        let (dir, p) = tmp_el("bounds", "(defun foo () 1)\n");
+        let r = s.structural_bounds(Parameters(PathSymbolArgs { path: p.to_str().unwrap().to_string(), symbol: "foo".into() })).await;
+        let out = r.unwrap();
+        assert_eq!(out, "0:16");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_get() {
+        let s = mcp();
+        let (dir, p) = tmp_el("get", "(defun foo () 1)\n");
+        let r = s.structural_get(Parameters(PathSymbolArgs { path: p.to_str().unwrap().to_string(), symbol: "foo".into() })).await;
+        let out = r.unwrap();
+        assert!(out.contains("(defun foo"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_complete() {
+        let s = mcp();
+        let r = s.structural_complete(Parameters(CompleteArgs { lang: "elisp".into(), body: "(defun foo (x)".into() })).await;
+        assert_eq!(r.unwrap(), "(defun foo (x))");
+    }
+
+    #[tokio::test]
+    async fn test_structural_context() {
+        let s = mcp();
+        let (dir, p) = tmp_el("context", "(defun foo () 1)\n");
+        let r = s.structural_context(Parameters(PathArgs { path: p.to_str().unwrap().to_string(), semantic: false })).await;
+        let out = r.unwrap();
+        assert!(out.contains("tree"));
+        assert!(out.contains("foo"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_format() {
+        let s = mcp();
+        let (dir, p) = tmp_el("fmt", "(defun foo () 1)\n");
+        let r = s.structural_format(Parameters(FormatArgs { path: p.to_str().unwrap().to_string(), write: false, diff: false })).await;
+        assert!(r.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_replace() {
+        let s = mcp();
+        let (dir, p) = tmp_el("replace", "(defun foo () 1)\n");
+        let r = s.structural_replace(Parameters(ReplaceArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "foo".into(),
+            new_body: "(defun foo () 42)".into(),
+            diff: false,
+        })).await;
+        assert!(r.is_ok());
+        // verify the file was updated
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("(defun foo () 42)"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_insert() {
+        let s = mcp();
+        let (dir, p) = tmp_el("insert", "");
+        // empty file, insert at __start__
+        let r = s.structural_insert(Parameters(InsertArgs {
+            path: p.to_str().unwrap().to_string(),
+            after_symbol: "__start__".into(),
+            node: "(defun bar () 2)".into(),
+            diff: false,
+        })).await;
+        assert!(r.is_ok());
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("(defun bar () 2)"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_rename() {
+        let s = mcp();
+        let (dir, p) = tmp_el("rename", "(defun foo () 1)\n");
+        let r = s.structural_rename(Parameters(RenameArgs {
+            path: p.to_str().unwrap().to_string(),
+            old: "foo".into(),
+            new: "bar".into(),
+            write: false,
+        })).await;
+        let out = r.unwrap();
+        assert!(out.contains("(defun bar"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_remove() {
+        let s = mcp();
+        let (dir, p) = tmp_el("remove", "(defun foo () 1)\n");
+        let r = s.structural_remove(Parameters(RemoveArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "foo".into(),
+            keep_calls: true,
+            write: false,
+        })).await;
+        assert!(r.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_move() {
+        let s = mcp();
+        let (dir, p) = tmp_el("move", "(defun a () 1)\n\n(defun b () 2)\n");
+        let r = s.structural_move(Parameters(MoveArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "a".into(),
+            after: "b".into(),
+            write: false,
+        })).await;
+        assert!(r.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_substitute() {
+        let s = mcp();
+        let (dir, p) = tmp_el("subst", "(defun foo (x) (+ x 1))\n");
+        let r = s.structural_substitute(Parameters(SubstituteArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "foo".into(),
+            pattern: "(+ x 1)".into(),
+            replacement: "(* x 2)".into(),
+            write: false,
+        })).await;
+        let out = r.unwrap();
+        assert!(out.contains("(* x 2)"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_wrap() {
+        let s = mcp();
+        let (dir, p) = tmp_el("wrap", "(defun foo () (+ 1 2))\n");
+        let r = s.structural_wrap(Parameters(WrapArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "foo".into(),
+            r#in: "progn".into(),
+            bindings: None,
+            condition: None,
+            write: false,
+        })).await;
+        let out = r.unwrap();
+        assert!(out.contains("(progn"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_callers() {
+        let s = mcp();
+        let (dir, p) = tmp_el("callers", "(defun a () (b))\n\n(defun b () 1)\n");
+        let r = s.structural_callers(Parameters(PathSymbolArgs { path: p.to_str().unwrap().to_string(), symbol: "b".into() })).await;
+        let out = r.unwrap();
+        assert!(out.contains("a calls b"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_flatten() {
+        let s = mcp();
+        let (dir, p) = tmp_el("flatten", "(defun add1 (x) (+ x 1))\n\n(defun foo () (add1 2))\n");
+        let r = s.structural_flatten(Parameters(FlattenArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "add1".into(),
+            write: false,
+        })).await;
+        assert!(r.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_convert_let() {
+        let s = mcp();
+        let (dir, p) = tmp_el("convert", "(defun foo () (let ((x 1)) x))\n");
+        let r = s.structural_convert_let(Parameters(ConvertLetArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "foo".into(),
+            to: "let*".into(),
+            write: false,
+        })).await;
+        let out = r.unwrap();
+        assert!(out.contains("(let*"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_instrument_with() {
+        let s = mcp();
+        let (dir, p) = tmp_el("instr_with", "(defun foo () (+ 1 2))\n");
+        let r = s.structural_instrument(Parameters(InstrumentArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "foo".into(),
+            r#with: Some("(message \"trace\")".into()),
+            at: None,
+            wrap: None,
+            write: false,
+        })).await;
+        let out = r.unwrap();
+        assert!(out.contains("(message \"trace\""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_eval_no_file() {
+        let s = mcp();
+        let r = s.structural_eval(Parameters(PathArgs { path: "/nonexistent.el".into(), semantic: false })).await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_error_on_missing_file() {
+        let s = mcp();
+        // .txt triggers file-not-found; .el returns empty content
+        let r = s.check_structural_file(Parameters(PathArgs { path: "/nonexistent.txt".into(), semantic: false })).await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_structural_tree_depth() {
+        let s = mcp();
+        let content = "(defun foo (x)\n  (let ((y 1))\n    (+ x y)))\n";
+        let (dir, p) = tmp_el("tree_depth", content);
+        let r = s.structural_tree(Parameters(PathDepthArgs { path: p.to_str().unwrap().to_string(), depth: Some(2) })).await;
+        let out = r.unwrap();
+        assert!(out.contains("foo"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_replace_diff() {
+        let s = mcp();
+        let (dir, p) = tmp_el("replace_diff", "(defun foo () 1)\n");
+        let r = s.structural_replace(Parameters(ReplaceArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "foo".into(),
+            new_body: "(defun foo () 42)".into(),
+            diff: true,
+        })).await;
+        assert!(r.is_ok());
+        let out = r.unwrap();
+        assert!(out.contains("Wrote"));
+        assert!(out.contains("+") || out.contains("-"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_insert_diff() {
+        let s = mcp();
+        let (dir, p) = tmp_el("insert_diff", "");
+        let r = s.structural_insert(Parameters(InsertArgs {
+            path: p.to_str().unwrap().to_string(),
+            after_symbol: "__start__".into(),
+            node: "(defun bar () 2)".into(),
+            diff: true,
+        })).await;
+        assert!(r.is_ok());
+        let out = r.unwrap();
+        assert!(out.contains("Wrote"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_get_info() {
+        let s = mcp();
+        let info = ServerHandler::get_info(&s);
+        assert!(info.instructions.as_ref().unwrap().contains("Structural editing"));
+    }
+
+    #[tokio::test]
+    async fn test_structural_extract_empty_params() {
+        let s = mcp();
+        // extract fails with StartAnchorOnNonempty but we test the empty params code path
+        let (dir, p) = tmp_el("extract_params", "(defun foo (x) (+ x 1))\n");
+        let r = s.structural_extract(Parameters(ExtractArgs {
+            path: p.to_str().unwrap().to_string(),
+            symbol: "foo".into(),
+            pattern: "(+ x 1)".into(),
+            name: "add1".into(),
+            params: Some("".into()),
+            write: false,
+        })).await;
+        // Expects error because __start__ anchor requires empty file, but params parsing is exercised
+        assert!(r.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
