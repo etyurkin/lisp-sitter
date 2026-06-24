@@ -83,10 +83,21 @@ lisp-sitter completions fish | source    # fish
 
 ### stdin
 
-`--body-file -` and `--node-file -` read from stdin:
+`--body-file -` and `--node-file -` read content from stdin:
 
 ```bash
-echo '(defun x () 1)' | lisp-sitter replace foo.el old --body-file - --write
+# Complete an unbalanced form
+echo '(defun foo (x)' | lisp-sitter complete --lang elisp --body-file -
+# → (defun foo (x))
+```
+
+Pipe a replacement with bad indentation, then `fmt` fixes it:
+
+```bash
+echo '(defun greet (name) (message "hi" name))' > greet.el
+echo '(defun greet (name)\n(message "hello, %s" name))' | \
+  lisp-sitter replace greet.el greet --body-file - --write
+lisp-sitter fmt greet.el --write
 ```
 
 ## Commands
