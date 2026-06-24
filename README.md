@@ -71,33 +71,34 @@ lisp-sitter check-node --lang scheme --body '(define x 1)'
 | `__end__` | Append after the last top-level form |
 | *symbol* | Insert immediately after the named form |
 
-### Shell completions
-
-Tab-complete subcommands and file paths in your shell:
-
-```bash
-eval "$(lisp-sitter completions bash)"   # bash
-eval "$(lisp-sitter completions zsh)"    # zsh
-lisp-sitter completions fish | source    # fish
-```
-
 ### stdin
 
-`--body-file -` and `--node-file -` read content from stdin:
+Read values from stdin with `--body-file -` or `--node-file -`:
 
 ```bash
-# Complete an unbalanced form
 echo '(defun foo (x)' | lisp-sitter complete --lang elisp --body-file -
 # → (defun foo (x))
 ```
 
-Pipe a replacement with bad indentation, then `fmt` fixes it:
+### Edit workflow
+
+Get a form, pipe a replacement, then format:
 
 ```bash
 echo '(defun greet (name) (message "hi" name))' > greet.el
 echo '(defun greet (name)\n(message "hello, %s" name))' | \
   lisp-sitter replace greet.el greet --body-file - --write
 lisp-sitter fmt greet.el --write
+```
+
+### Shell completions
+
+Tab-complete subcommands in your terminal:
+
+```bash
+eval "$(lisp-sitter completions bash)"   # bash
+eval "$(lisp-sitter completions zsh)"    # zsh
+lisp-sitter completions fish | source    # fish
 ```
 
 ## Commands
