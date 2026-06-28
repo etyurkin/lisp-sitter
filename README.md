@@ -29,6 +29,154 @@ Or without Make:
 cargo install --path crates/lisp-sitter
 ```
 
+## Quick start
+
+```bash
+# List top-level forms (line:column suffix on each label)
+lisp-sitter tree src/foo.el
+
+# Byte range of a named form
+lisp-sitter bounds src/foo.el my-function
+
+# Print the full text of a form
+lisp-sitter get src/foo.el my-function
+
+# Replace a form (stdout); add --write to save
+lisp-sitter replace src/foo.el my-function \
+  --body '(defun my-function () 42)' --write
+
+# Insert after a symbol, at file start, or at end
+lisp-sitter insert src/foo.el my-function \
+  --node '(defun helper () t)' --write
+lisp-sitter insert new.scm __start__ --node '(define version 1)' --write
+lisp-sitter insert lib.lisp __end__ --node '(defun tail () nil)' --write
+
+# Complete missing parens
+lisp-sitter complete --lang scheme --body '(define (fib n) (if (< n 2)'
+# → (define (fib n) (if (< n 2) n ...))
+
+# Re-indent a file
+lisp-sitter fmt src/foo.el --write
+
+# Validate
+lisp-sitter check src/foo.el
+lisp-sitter check-node --lang scheme --body '(define x 1)'
+```
+
+### Anchors
+
+| Anchor | Meaning |
+|--------|---------|
+| `__start__` | Insert as the first form (empty file only) |
+| `__end__` | Append after the last top-level form |
+| *symbol* | Insert immediately after the named form |
+
+### stdin
+
+Read values from stdin with `--body-file -` or `--node-file -`:
+
+```bash
+echo '(defun foo (x)' | lisp-sitter complete --lang elisp --body-file -
+# → (defun foo (x))
+```
+
+### Edit workflow
+
+Get a form, pipe a replacement, then format:
+
+```bash
+echo '(defun greet (name) (message "hi" name))' > greet.el
+echo '(defun greet (name)\n(message "hello, %s" name))' | \
+  lisp-sitter replace greet.el greet --body-file - --write
+lisp-sitter fmt greet.el --write
+```
+
+### Shell completions
+
+Tab-complete subcommands in your terminal:
+
+```bash
+eval "$(lisp-sitter completions bash)"   # bash
+eval "$(lisp-sitter completions zsh)"    # zsh
+lisp-sitter completions fish | source    # fish
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `tree PATH` | Outline of top-level definitions, one per line (`defun:foo@12:1`). `--all` also lists non-definition forms (`require`, `provide`, `setq`, …) |
+| `bounds PATH SYMBOL` | Byte positions `START:END` for a named form |
+| `get PATH SYMBOL` | Print the full text of a named top-level form |
+| `replace PATH SYMBOL` | Replace a form; requires `--body` or `--body-file` |
+| `insert PATH AFTER` | Insert a form; requires `--node` or `--node-file` |
+| `complete` | Append missing `)` to an unbalanced s-expression |
+| `fmt PATH` | Re-indent a file (depth-based, 2-space indent). `--write` to save. `--align` for continuation-line alignment (arg-column instead of depth×2) |
+| `eval PATH` | Run dialect-specific validation (byte-compile, sbcl, guile…) |
+| `remove PATH SYMBOL` | Remove a form; optionally replace call sites with ignore |
+| `move PATH SYMBOL --after ANCHOR` | Reorder a form after another symbol, `__start__`, or `__end__` |
+| `substitute PATH SYMBOL` | Replace a sub-expression inside a form using `--pattern` / `--replacement` |
+| `extract PATH SYMBOL` | Extract a sub-expression into a new function |
+| `rename PATH OLD NEW` | Rename a form, its call sites, and `#'old`/`'old` references. `--refs` also renames plain `'old`; `--no-refs` renames only head-position call sites |
+| `wrap PATH SYMBOL` | Wrap body in `progn`, `let`, or `if` |
+| `check PATH` | Validate file → `OK` or syntax error on stderr |
+| `check PATH --semantic` | Deep validation — docstrings, missing `provide`/`in-package`/library export warnings (elisp, commonlisp, scheme) |
+| `check-node` | Validate one form; `--lang elisp\|commonlisp\|scheme` |
+| `mcp serve` | Run MCP server on stdio |
+| `mcp install` | Add server to `~/.cursor/mcp.json` (or `--claude-code`, `--claude-desktop`) |
+
+`replace`, `insert`, `fmt`, `remove`, `move`, `substitute`, `extract`, `rename`, and `wrap` print the updated file to stdout unless `--write` is set. With `--write`, they atomically replace the file and print `OK`.
+
+`tree`, `replace`, `insert`, and `fmt` accept `--diff` to show a line-based diff on stderr. `tree` accepts `--depth N` for sub-form navigation:
+
+```bash
+lisp-sitter tree src/foo.el --depth 2
+# → defun:my-func@12:1
+# →   let:bindings@15:3
+# →   if:condition@18:3
+```
+
+File arguments accept glob patterns and directories for batch operations:
+```bash
+lisp-sitter check "src/**/*.el"
+lisp-sitter fmt lib/
+lisp-sitter remove "*.lisp" dead-func --write
+```
+
+Exit code `0` on success, `1` on error.
+
+### Safety
+
+- `--diff` — show line-based diff on stderr before changes
+- `--confirm` — show diff + prompt before writing
+- Auto-backups — previous version saved to `$TMPDIR/lisp-sitter-backups/`
+- Atomic writes — temp file + rename, never corrupts on crash
+
+### Configuration
+
+Language is inferred from file extension. Override with `LISP_SITTER_LANG=elisp|commonlisp|scheme` or the `--lang` global flag.
+
+Custom extension mappings and project-specific definer macros can be set in
+`~/.lisp-sitter.json` or `~/.config/lisp-sitter/config.json`:
+
+```json
+{
+  "extensions": {
+    ".foo": "elisp",
+    ".bar": "scheme"
+  },
+  "extra_definers": {
+    "elisp": ["define-widget", "transient-define-prefix"],
+    "commonlisp": ["define-app-command"]
+  }
+}
+```
+
+`extra_definers` registers additional top-level definition forms per language
+(`elisp`, `commonlisp`, `scheme`) so your own def-macros are listed by `tree` and
+addressable by `bounds`/`get`/`replace`/`rename`. Each is treated like `defun`/
+`define` — the name is the second element.
+
 ## How it works
 
 - **Parse** — tree-sitter grammars ([elisp](https://github.com/Wilfred/tree-sitter-elisp), [commonlisp](https://github.com/theHamsta/tree-sitter-commonlisp), [scheme](https://github.com/6cdh/tree-sitter-scheme))
