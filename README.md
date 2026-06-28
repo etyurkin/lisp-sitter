@@ -177,6 +177,80 @@ Custom extension mappings and project-specific definer macros can be set in
 addressable by `bounds`/`get`/`replace`/`rename`. Each is treated like `defun`/
 `define` — the name is the second element.
 
+## Agent workflow
+
+For `.el`, `.lisp`, `.cl`, `.scm`, `.ss`, `.sld` files, prefer **lisp-sitter** over line-based edits:
+
+1. `lisp-sitter tree PATH` — see what forms exist
+2. `lisp-sitter get PATH SYMBOL` — read the full form text (optional)
+3. `lisp-sitter replace PATH SYMBOL` or `substitute` — pass **complete** form text
+4. `lisp-sitter check PATH` — validate after refactors
+
+For structural restructuring: `wrap`, `extract`, `move`, and `rename`.
+
+When writing new forms, use `complete` to fix unbalanced parens, then `fmt` to re-indent.
+
+Example rule for `CLAUDE.md` or Cursor rules:
+
+```markdown
+For Lisp files (.el .lisp .cl .scm .ss .sld), use lisp-sitter for edits:
+tree → get → replace/substitute (complete forms only) → check.
+Use complete for paren balancing, fmt for indentation, rename for renaming.
+Do not use line-based search/replace on structural Lisp files.
+```
+
+## MCP server
+
+Expose the same structural tools to Cursor, Claude Code, or any MCP client:
+
+| Tool | Description |
+|------|-------------|
+| `check_structural_file` | Validate a whole file (with `semantic: true` for deep checks) |
+| `check_structural_node` | Validate one top-level form |
+| `structural_tree` | Outline of top-level forms (`depth` for sub-forms) |
+| `structural_bounds` | Byte range `START:END` for a symbol |
+| `structural_get` | Full text of a named form |
+| `structural_context` | Complete structural context: tree + bounds + full text |
+| `structural_replace` | Replace a form (validates and saves) |
+| `structural_insert` | Insert after `__start__`, `__end__`, or a symbol |
+| `structural_complete` | Append missing `)` to an unbalanced form |
+| `structural_format` | Re-indent a file (depth-based) |
+| `structural_eval` | Run dialect-specific validation (byte-compile, sbcl, guile…) |
+| `structural_remove` | Remove a form (with `keep_calls` option) |
+| `structural_move` | Move a form after an anchor |
+| `structural_substitute` | Replace a sub-expression inside a form |
+| `structural_extract` | Extract a sub-expression into a new function |
+| `structural_rename` | Rename a form, call sites, and refs (`refs: true` for plain `'old`) |
+| `structural_wrap` | Wrap a form's body in a construct |
+
+All tools accept `write: true` to save in place. `structural_replace`, `structural_insert`, and `structural_format` accept `diff: true` to show a line-based diff before applying.
+
+Install into Cursor (default) or Claude:
+
+```bash
+make install
+lisp-sitter mcp install                       # ~/.cursor/mcp.json
+lisp-sitter mcp install --claude-code         # ~/.claude.json (Claude Code CLI)
+lisp-sitter mcp install --claude-desktop      # ~/.claude/settings.json (Claude Desktop)
+lisp-sitter mcp install --claude-code --claude-desktop  # both Claude targets
+lisp-sitter mcp install --cursor --claude-code --claude-desktop  # all three
+```
+
+Manual config entry:
+
+```json
+{
+  "mcpServers": {
+    "lisp-sitter": {
+      "command": "/path/to/lisp-sitter",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Run standalone: `lisp-sitter mcp serve` (stdio transport).
+
 ## How it works
 
 - **Parse** — tree-sitter grammars ([elisp](https://github.com/Wilfred/tree-sitter-elisp), [commonlisp](https://github.com/theHamsta/tree-sitter-commonlisp), [scheme](https://github.com/6cdh/tree-sitter-scheme))
