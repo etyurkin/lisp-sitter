@@ -91,6 +91,18 @@ enum Command {
     /// Convert between let and let* bindings.
     /// Example: lisp-sitter convert-let foo.el my-func --to let* --write
     ConvertLet { path: String, symbol: String, #[arg(long)] to: String, #[arg(long)] write: bool },
+    /// List MISSING/ERROR tree-sitter nodes in a file.
+    /// Example: lisp-sitter find-errors foo.el
+    FindErrors { path: String },
+    /// Return outline plus full text of each top-level form.
+    /// Example: lisp-sitter context foo.el
+    Context { path: String },
+    /// Paredit splice: dissolve a wrapper list in place.
+    /// Example: lisp-sitter splice foo.el my-func --pattern '(progn (a) (b))'
+    Splice { path: String, symbol: String, #[arg(long)] pattern: String, #[arg(long)] write: bool },
+    /// Paredit raise: promote a sub-expression over its enclosing list.
+    /// Example: lisp-sitter raise foo.el my-func --pattern '(bar x)'
+    Raise { path: String, symbol: String, #[arg(long)] pattern: String, #[arg(long)] write: bool },
     /// Validate a single top-level form without saving.
     /// Example: lisp-sitter check-node --lang scheme --body '(define x 1)'
     CheckNode { #[arg(long, default_value = "elisp")] lang: String, #[arg(long, conflicts_with = "body_file")] body: Option<String>, #[arg(long)] body_file: Option<String> },
@@ -187,6 +199,16 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Instrument { path, symbol, r#with, at, wrap, write } => { let u = lisp_sitter::transform::instrument(&reg, &path, &symbol, r#with.as_deref(), at.as_deref(), wrap.as_deref())?; if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); } }
         Command::Flatten { path, symbol, write } => { let u = lisp_sitter::transform::flatten(&reg, &path, &symbol)?; if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); } }
         Command::ConvertLet { path, symbol, to, write } => { let u = lisp_sitter::transform::convert_let(&reg, &path, &symbol, &to)?; if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); } }
+        Command::FindErrors { path } => { println!("{}", lisp_sitter::ops::find_errors(&reg, &path)?); }
+        Command::Context { path } => { print!("{}", lisp_sitter::ops::context(&reg, &path)?); }
+        Command::Splice { path, symbol, pattern, write } => {
+            let u = lisp_sitter::transform::splice(&reg, &path, &symbol, &pattern)?;
+            if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); }
+        }
+        Command::Raise { path, symbol, pattern, write } => {
+            let u = lisp_sitter::transform::raise(&reg, &path, &symbol, &pattern)?;
+            if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); }
+        }
         Command::CheckNode { lang, body, body_file } => { println!("{}", lisp_sitter::ops::check_node_by_lang(&reg, &lang, &read_text(body, body_file)?)?); }
         Command::Completions { shell } => { let s: clap_complete::Shell = shell.parse().map_err(|e| anyhow::anyhow!("unknown shell: {e}"))?; let mut cmd = Cli::command(); clap_complete::generate(s, &mut cmd, "lisp-sitter", &mut std::io::stdout()); }
         Command::Mcp { command } => match command { McpCommand::Serve => { mcp::serve_stdio(reg).await?; }, McpCommand::Install { cursor, claude_code, claude_desktop } => { mcp::install_config(cursor, claude_code, claude_desktop)?; } },
