@@ -179,6 +179,53 @@ fn is_lisp_ext(path: &str) -> bool {
         || path.ends_with(".scm") || path.ends_with(".ss") || path.ends_with(".sld")
 }
 
+/// Expand a path argument into a concrete list of files.
+///
+/// - A directory is walked recursively, keeping only Lisp files.
+/// - A glob (`*`/`?`) is matched against file names in its parent directory.
+/// - Anything else is returned verbatim as a single-element list.
+pub fn expand_paths(path: &str) -> Vec<String> {
+    if Path::new(path).is_dir() {
+        let mut r: Vec<String> = walkdir_paths(path).into_iter().filter(|f| is_lisp_ext(f)).collect();
+        r.sort();
+        r
+    } else if path.contains('*') || path.contains('?') {
+        let (dir, pat) = match path.rfind('/') { Some(i) => (&path[..i], &path[i + 1..]), None => (".", path) };
+        let mut r: Vec<String> = walkdir_paths(dir)
+            .into_iter()
+            .filter(|f| {
+                let name = Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                glob_match(pat, &name) && is_lisp_ext(f)
+            })
+            .collect();
+        r.sort();
+        r
+    } else {
+        vec![path.to_string()]
+    }
+}
+
+fn glob_match(pat: &str, name: &str) -> bool {
+    if pat == "*" || pat == "*.*" { return true; }
+    if !pat.contains('*') { return pat == name; }
+    let parts: Vec<&str> = pat.split('*').collect();
+    if parts.len() == 2 { name.starts_with(parts[0]) && name.ends_with(parts[1]) } else { parts.iter().all(|s| name.contains(s)) }
+}
+
+fn walkdir_paths(path: &str) -> Vec<String> {
+    let mut r = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(path)];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() { stack.push(p); } else { r.push(p.to_string_lossy().to_string()); }
+            }
+        }
+    }
+    r
+}
+
 pub fn diff_text(old: &str, new: &str, path: &str) -> String {
     let ol: Vec<&str> = old.lines().collect(); let nl: Vec<&str> = new.lines().collect();
     let max = ol.len().max(nl.len()); let mut reg: Vec<(usize, usize)> = Vec::new(); let mut i = 0;
@@ -228,6 +275,43 @@ mod tests {
         assert_eq!(detect_language(""), None);
         assert_eq!(detect_language("(foo bar baz)"), None);
         assert_eq!(detect_language("just some text"), None);
+    }
+
+    #[test]
+    fn test_glob_match() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*.*", "foo.bar"));
+        assert!(glob_match("*.el", "test.el"));
+        assert!(!glob_match("*.el", "test.rs"));
+        assert!(glob_match("test.*", "test.el"));
+        assert!(glob_match("foo*bar", "fooXYZbar"));
+        assert!(glob_match("test.el", "test.el"));
+        assert!(!glob_match("test.el", "other.el"));
+    }
+
+    #[test]
+    fn test_expand_paths_single_file() {
+        let dir = test_dir("expand_single");
+        let path = dir.join("test.el");
+        std::fs::write(&path, "(defun foo () 1)\n").unwrap();
+        let paths = expand_paths(path.to_str().unwrap());
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("test.el"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_expand_paths_glob_and_dir() {
+        let dir = test_dir("expand_glob");
+        std::fs::write(dir.join("a.el"), "(defun a ())\n").unwrap();
+        std::fs::write(dir.join("b.el"), "(defun b ())\n").unwrap();
+        std::fs::write(dir.join("c.txt"), "text").unwrap();
+
+        let pat = format!("{}/*.el", dir.to_str().unwrap());
+        assert_eq!(expand_paths(&pat).len(), 2);
+        // directory expansion keeps only lisp files
+        assert_eq!(expand_paths(dir.to_str().unwrap()).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

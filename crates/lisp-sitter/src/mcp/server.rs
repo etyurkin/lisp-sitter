@@ -55,6 +55,12 @@ struct FormatArgs { path: String, #[serde(default)] write: bool, #[serde(default
 struct RenameArgs { path: String, old: String, new: String, #[serde(default)] write: bool, #[serde(default)] refs: bool, #[serde(default)] no_refs: bool }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RenameProjectArgs { path: String, old: String, new: String, #[serde(default)] write: bool, #[serde(default)] refs: bool, #[serde(default)] no_refs: bool }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct AnalyzeArgs { path: String, #[serde(default)] unused: bool, #[serde(default)] unresolved: bool, #[serde(default)] arity: bool }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WrapArgs { path: String, symbol: String, r#in: String, #[serde(default)] bindings: Option<String>, #[serde(default)] condition: Option<String>, #[serde(default)] write: bool }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -156,6 +162,36 @@ impl LispSitterMcp {
         let ref_mode = if args.no_refs { lisp_sitter::transform::RefsMode::HeadOnly } else if args.refs { lisp_sitter::transform::RefsMode::AllRefs } else { lisp_sitter::transform::RefsMode::HeadAndSharp };
         let u = lisp_sitter::transform::rename(&self.reg, &args.path, &args.old, &args.new, ref_mode).map_err(|e| e.to_string())?;
         if args.write { ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?; Ok(format!("Wrote {}", args.path)) } else { Ok(u) }
+    }
+
+    #[tool(description = "Rename a symbol across an entire project. `path` is a directory or glob. \
+        The file(s) defining the symbol get a full rename (definition header + references); \
+        every other matching file gets reference-only updates. Without write=true, returns a \
+        unified diff preview of all files that would change.")]
+    async fn structural_rename_project(&self, Parameters(args): Parameters<RenameProjectArgs>) -> Result<String, String> {
+        let ref_mode = if args.no_refs { lisp_sitter::transform::RefsMode::HeadOnly } else if args.refs { lisp_sitter::transform::RefsMode::AllRefs } else { lisp_sitter::transform::RefsMode::HeadAndSharp };
+        let paths = ops::expand_paths(&args.path);
+        let changed = lisp_sitter::transform::rename_project(&self.reg, &paths, &args.old, &args.new, ref_mode).map_err(|e| e.to_string())?;
+        if args.write {
+            for (p, c) in &changed { ops::atomic_write(p, c).map_err(|e| e.to_string())?; }
+            let list = changed.iter().map(|(p, _)| format!("  {p}")).collect::<Vec<_>>().join("\n");
+            Ok(format!("Renamed `{}` -> `{}` in {} file(s):\n{}", args.old, args.new, changed.len(), list))
+        } else {
+            let mut out = String::new();
+            for (p, c) in &changed { let orig = ops::read_file(p).map_err(|e| e.to_string())?; out.push_str(&ops::diff_text(&orig, c, p)); }
+            out.push_str(&format!("{} file(s) would change", changed.len()));
+            Ok(out)
+        }
+    }
+
+    #[tool(description = "Project-wide semantic analysis over a directory or glob: unused definitions, \
+        unresolved calls (not defined in the project and not a known builtin), and arity mismatches. \
+        By default all three run; set any of unused/unresolved/arity to true to run only those. \
+        Unresolved-symbol detection is heuristic and may report false positives.")]
+    async fn structural_analyze(&self, Parameters(args): Parameters<AnalyzeArgs>) -> Result<String, String> {
+        let opt = if !args.unused && !args.unresolved && !args.arity { lisp_sitter::analyze::Options::all() } else { lisp_sitter::analyze::Options { unused: args.unused, unresolved: args.unresolved, arity: args.arity } };
+        let paths = ops::expand_paths(&args.path);
+        tool_result(lisp_sitter::analyze::analyze(&self.reg, &paths, opt))
     }
 
     #[tool(description = "Wrap the body of a named form in a construct (progn, let, if).")]

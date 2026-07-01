@@ -49,6 +49,13 @@ pub trait LanguagePlugin: Send + Sync {
     fn node_bounds(&self, content: &str, symbol: &str) -> crate::Result<(usize, usize)>;
     fn semantic_check(&self, content: &str) -> Vec<String> { let _ = content; Vec::new() }
 
+    /// Whether `name` is a known special form, macro, or built-in function of
+    /// this dialect — i.e. a symbol that resolves globally without a project
+    /// definition. Used by project analysis to suppress unresolved-call
+    /// warnings. The default returns `false`; each plugin overrides it with a
+    /// curated (non-exhaustive) set.
+    fn is_known_global(&self, name: &str) -> bool { let _ = name; false }
+
     /// Return descriptions of MISSING tokens and ERROR nodes found by the
     /// tree-sitter parser.  Empty when the file is structurally clean or when
     /// tree-sitter is unavailable for this language.

@@ -159,7 +159,55 @@ impl LanguagePlugin for ElispPlugin {
             .map(|tree| lisp_sitter_core::treesit_util::find_error_nodes(content, tree.root_node()))
             .unwrap_or_default()
     }
+
+    fn is_known_global(&self, name: &str) -> bool {
+        is_elisp_global(name)
+    }
 }  // impl LanguagePlugin for ElispPlugin
+
+/// Curated (non-exhaustive) set of Emacs Lisp special forms and common
+/// built-ins, used by project analysis to suppress unresolved-call warnings.
+fn is_elisp_global(name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    let set = SET.get_or_init(|| {
+        [
+            // special forms / core macros
+            "if", "when", "unless", "cond", "and", "or", "not", "while", "dolist", "dotimes",
+            "let", "let*", "letrec", "lambda", "function", "quote", "progn", "prog1", "prog2",
+            "setq", "setq-default", "set", "setf", "push", "pop", "incf", "decf", "cl-incf", "cl-decf",
+            "save-excursion", "save-restriction", "save-match-data", "with-current-buffer",
+            "condition-case", "unwind-protect", "catch", "throw", "ignore-errors", "ignore",
+            "interactive", "declare", "defvar", "defconst", "defcustom", "defun", "defmacro",
+            "defsubst", "cl-defun", "require", "provide", "eval-when-compile", "eval-and-compile",
+            "with-eval-after-load", "pcase", "pcase-let", "cl-case", "cl-loop", "cl-letf", "cl-flet",
+            "apply", "funcall", "mapcar", "mapc", "mapcan", "mapconcat", "cl-remove-if", "cl-remove-if-not",
+            "seq-map", "seq-filter", "seq-reduce", "seq-find", "seq-do",
+            // list / sequence builtins
+            "car", "cdr", "caar", "cadr", "cddr", "cons", "list", "append", "nth", "nthcdr",
+            "length", "reverse", "nreverse", "member", "memq", "assoc", "assq", "delete", "delq",
+            "elt", "aref", "aset", "vconcat", "vector", "make-list", "make-vector", "last", "butlast",
+            // predicates / equality
+            "eq", "eql", "equal", "null", "atom", "consp", "listp", "stringp", "numberp", "integerp",
+            "symbolp", "functionp", "boundp", "fboundp", "zerop", "plusp", "minusp",
+            // arithmetic / strings
+            "+", "-", "*", "/", "%", "mod", "1+", "1-", "max", "min", "abs", "expt", "floor", "ceiling",
+            "=", "/=", "<", ">", "<=", ">=", "concat", "format", "format-message", "string", "substring",
+            "string=", "string<", "string-equal", "string-match", "string-prefix-p", "string-suffix-p",
+            "split-string", "string-join", "string-trim", "number-to-string", "string-to-number",
+            "symbol-name", "symbol-value", "intern", "make-symbol", "gensym",
+            // io / messaging
+            "message", "error", "user-error", "princ", "print", "prin1", "insert", "point", "goto-char",
+            // hash tables / alist
+            "make-hash-table", "gethash", "puthash", "remhash", "maphash", "hash-table-count",
+            "add-to-list", "alist-get", "plist-get", "plist-put",
+        ]
+        .into_iter()
+        .collect()
+    });
+    set.contains(name)
+}
 
 fn validate_content(content: &str) -> Result<()> {
     if let Some(err) =

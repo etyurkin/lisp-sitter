@@ -117,8 +117,9 @@ lisp-sitter completions fish | source    # fish
 | `move PATH SYMBOL --after ANCHOR` | Reorder a form after another symbol, `__start__`, or `__end__` |
 | `substitute PATH SYMBOL` | Replace a sub-expression inside a form using `--pattern` / `--replacement` |
 | `extract PATH SYMBOL` | Extract a sub-expression into a new function |
-| `rename PATH OLD NEW` | Rename a form, its call sites, and `#'old`/`'old` references. `--refs` also renames plain `'old`; `--no-refs` renames only head-position call sites |
+| `rename PATH OLD NEW` | Rename a form, its call sites, and `#'old`/`'old` references. `PATH` may be a file, directory, or glob for a **project-wide** rename (definition + every reference across all matching files). `--refs` also renames plain `'old`; `--no-refs` renames only head-position call sites |
 | `wrap PATH SYMBOL` | Wrap body in `progn`, `let`, or `if` |
+| `analyze PATH` | Project-wide semantic analysis over a directory or glob: unused definitions, unresolved calls, and arity mismatches. `--unused` / `--unresolved` / `--arity` to run a subset (default: all) |
 | `check PATH` | Validate file → `OK` or syntax error on stderr |
 | `check PATH --semantic` | Deep validation — docstrings, missing `provide`/`in-package`/library export warnings (elisp, commonlisp, scheme) |
 | `check-node` | Validate one form; `--lang elisp\|commonlisp\|scheme` |
@@ -177,6 +178,56 @@ Custom extension mappings and project-specific definer macros can be set in
 addressable by `bounds`/`get`/`replace`/`rename`. Each is treated like `defun`/
 `define` — the name is the second element.
 
+## Project-wide operations
+
+`rename` and `analyze` operate across a whole project when given a directory or glob.
+
+```bash
+# Rename a function and every call site across the project (preview, then apply)
+lisp-sitter rename src/ old-name new-name
+lisp-sitter rename src/ old-name new-name --write
+
+# Semantic analysis: unused definitions, unresolved calls, arity mismatches
+lisp-sitter analyze src/
+lisp-sitter analyze "src/**/*.el" --unused --arity
+```
+
+`analyze` reports three classes of issue:
+
+- **unused** — a `defun`/`define`/macro with no references anywhere in the analyzed files
+- **arity** — a call whose argument count does not match the definition's lambda list (`&optional`/`&rest`/variadic are understood)
+- **unresolved** — a call to a name that is neither defined in the analyzed files nor a known builtin
+
+Unresolved-symbol detection is heuristic: it relies on a curated (non-exhaustive)
+builtin table per dialect, so dynamically-built calls or builtins outside the
+table may be reported. Treat the output as warnings, not errors.
+
+## Editor integration (Emacs)
+
+[`editor/lisp-sitter.el`](editor/lisp-sitter.el) is a thin Emacs wrapper that shells
+out to the CLI, so interactive edits get the same parse-and-validate guarantees as
+the command line.
+
+```elisp
+(add-to-list 'load-path "/path/to/lisp-sitter/editor")
+(require 'lisp-sitter)
+(add-hook 'emacs-lisp-mode-hook #'lisp-sitter-mode)
+(add-hook 'scheme-mode-hook #'lisp-sitter-mode)
+(add-hook 'lisp-mode-hook #'lisp-sitter-mode)
+;; optional: validate with lisp-sitter after every save
+(setq lisp-sitter-check-on-save t)
+```
+
+| Key | Command | Action |
+|-----|---------|--------|
+| `C-c s t` | `lisp-sitter-tree` | Outline of top-level forms |
+| `C-c s g` | `lisp-sitter-get` | Show the text of a form |
+| `C-c s r` | `lisp-sitter-replace-defun` | Re-validate and rewrite the form at point |
+| `C-c s R` | `lisp-sitter-rename` | Rename a symbol (`C-u` for project-wide) |
+| `C-c s f` | `lisp-sitter-format-buffer` | Re-indent the file |
+| `C-c s c` | `lisp-sitter-check` | Validate the file |
+| `C-c s a` | `lisp-sitter-analyze` | Semantic analysis (`C-u` for project-wide) |
+
 ## Agent workflow
 
 For `.el`, `.lisp`, `.cl`, `.scm`, `.ss`, `.sld` files, prefer **lisp-sitter** over line-based edits:
@@ -221,6 +272,8 @@ Expose the same structural tools to Cursor, Claude Code, or any MCP client:
 | `structural_substitute` | Replace a sub-expression inside a form |
 | `structural_extract` | Extract a sub-expression into a new function |
 | `structural_rename` | Rename a form, call sites, and refs (`refs: true` for plain `'old`) |
+| `structural_rename_project` | Rename a symbol across a directory or glob (definition + every reference); diff preview unless `write: true` |
+| `structural_analyze` | Project-wide unused-definition, unresolved-call, and arity analysis over a directory or glob |
 | `structural_wrap` | Wrap a form's body in a construct |
 
 All tools accept `write: true` to save in place. `structural_replace`, `structural_insert`, and `structural_format` accept `diff: true` to show a line-based diff before applying.
@@ -294,7 +347,9 @@ crates/
   lisp-sitter-elisp/
   lisp-sitter-cl/
   lisp-sitter-scheme/
-  lisp-sitter/         # CLI binary + MCP server
+  lisp-sitter/         # CLI binary + MCP server + project analysis
+editor/
+  lisp-sitter.el       # thin Emacs wrapper around the CLI
 ```
 
 ## License

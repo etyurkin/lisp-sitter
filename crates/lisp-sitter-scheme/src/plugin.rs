@@ -156,6 +156,49 @@ impl LanguagePlugin for SchemePlugin {
             .map(|tree| lisp_sitter_core::treesit_util::find_error_nodes(content, tree.root_node()))
             .unwrap_or_default()
     }
+
+    fn is_known_global(&self, name: &str) -> bool {
+        is_scheme_global(name)
+    }
+}
+
+/// Curated (non-exhaustive) set of Scheme (R7RS-ish) syntactic keywords and
+/// common procedures, used by project analysis to suppress unresolved-call
+/// warnings.
+fn is_scheme_global(name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    let set = SET.get_or_init(|| {
+        [
+            // syntax / special forms
+            "define", "define-syntax", "define-values", "define-record-type", "lambda", "let", "let*",
+            "letrec", "letrec*", "let-values", "let*-values", "if", "cond", "case", "when", "unless",
+            "and", "or", "not", "begin", "do", "delay", "force", "quote", "quasiquote", "unquote",
+            "set!", "else", "=>", "syntax-rules", "parameterize", "guard", "dynamic-wind", "values",
+            "call-with-values", "call/cc", "call-with-current-continuation", "apply", "map", "for-each",
+            "filter", "fold-left", "fold-right", "reduce", "vector-map", "vector-for-each",
+            // pairs / lists
+            "car", "cdr", "caar", "cadr", "cddr", "caddr", "cons", "list", "list*", "append", "reverse",
+            "length", "list-ref", "list-tail", "member", "memq", "memv", "assoc", "assq", "assv",
+            "null?", "pair?", "list?", "set-car!", "set-cdr!", "last-pair", "cons*",
+            // predicates / equality
+            "eq?", "eqv?", "equal?", "zero?", "positive?", "negative?", "odd?", "even?", "number?",
+            "integer?", "string?", "symbol?", "procedure?", "boolean?", "char?", "vector?", "eof-object?",
+            // arithmetic / strings
+            "+", "-", "*", "/", "modulo", "remainder", "quotient", "abs", "min", "max", "expt", "sqrt",
+            "floor", "ceiling", "round", "truncate", "=", "<", ">", "<=", ">=", "1+", "add1", "sub1",
+            "number->string", "string->number", "string-append", "string-length", "substring",
+            "string=?", "string<?", "string->symbol", "symbol->string", "string->list", "list->string",
+            "string-ref", "make-string", "string", "char->integer", "integer->char",
+            // vectors / io
+            "vector", "make-vector", "vector-ref", "vector-set!", "vector-length", "vector->list",
+            "list->vector", "display", "write", "newline", "read", "error", "raise", "exit",
+        ]
+        .into_iter()
+        .collect()
+    });
+    set.contains(name)
 }
 
 #[cfg(test)]

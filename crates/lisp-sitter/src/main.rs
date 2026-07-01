@@ -54,8 +54,13 @@ enum Command {
     /// Evaluate using native tool (emacs byte-compile, sbcl --script, guile -s).
     /// Example: lisp-sitter eval foo.el
     Eval { path: String },
-    /// Rename a top-level form and its call sites.
-    /// Example: lisp-sitter rename foo.el my-func my-new-func --write
+    /// Rename a top-level form and its call sites. PATH may be a file, a
+    /// directory, or a glob for a project-wide rename (definition + every
+    /// reference across all matching files).
+    /// Examples:
+    ///   lisp-sitter rename foo.el my-func my-new-func --write
+    ///   lisp-sitter rename src/ my-func my-new-func --write
+    ///   lisp-sitter rename "src/**/*.el" my-func my-new-func --write
     Rename { path: String, old: String, new: String, #[arg(long)] write: bool, #[arg(long, help = "Also rename 'old and #'old references (when omitted, only #'old and (old …) call sites are renamed)")] refs: bool, #[arg(long)] no_refs: bool },
     /// Wrap the body of a form in a construct (progn, let, if).
     /// Examples:
@@ -103,6 +108,13 @@ enum Command {
     /// Paredit raise: promote a sub-expression over its enclosing list.
     /// Example: lisp-sitter raise foo.el my-func --pattern '(bar x)'
     Raise { path: String, symbol: String, #[arg(long)] pattern: String, #[arg(long)] write: bool },
+    /// Project-wide semantic analysis over a directory or glob: unused
+    /// definitions, unresolved calls, and arity mismatches. With no flags, all
+    /// three checks run. Unresolved-symbol detection is heuristic.
+    /// Examples:
+    ///   lisp-sitter analyze src/
+    ///   lisp-sitter analyze "src/**/*.el" --unused --arity
+    Analyze { path: String, #[arg(long)] unused: bool, #[arg(long)] unresolved: bool, #[arg(long)] arity: bool },
     /// Validate a single top-level form without saving.
     /// Example: lisp-sitter check-node --lang scheme --body '(define x 1)'
     CheckNode { #[arg(long, default_value = "elisp")] lang: String, #[arg(long, conflicts_with = "body_file")] body: Option<String>, #[arg(long)] body_file: Option<String> },
@@ -173,9 +185,23 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Rename { path, old, new, write, refs, no_refs } => {
             use lisp_sitter::transform::RefsMode;
             let ref_mode = if no_refs { RefsMode::HeadOnly } else if refs { RefsMode::AllRefs } else { RefsMode::HeadAndSharp };
-            let u = lisp_sitter::transform::rename(&reg, &path, &old, &new, ref_mode)?;
-            if cf { let d = lisp_sitter::ops::diff_text(&lisp_sitter::ops::read_file(&path)?, &u, &path); if !d.is_empty() { eprint!("{d}"); } confirm_or_abort(); }
-            if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); }
+            let multi = std::path::Path::new(&path).is_dir() || path.contains('*') || path.contains('?');
+            if multi {
+                let paths = lisp_sitter::ops::expand_paths(&path);
+                let changed = lisp_sitter::transform::rename_project(&reg, &paths, &old, &new, ref_mode)?;
+                if write {
+                    for (p, c) in &changed { lisp_sitter::ops::atomic_write(p, c)?; }
+                    println!("Renamed `{old}` -> `{new}` in {} file(s):", changed.len());
+                    for (p, _) in &changed { println!("  {p}"); }
+                } else {
+                    for (p, c) in &changed { let orig = lisp_sitter::ops::read_file(p)?; eprint!("{}", lisp_sitter::ops::diff_text(&orig, c, p)); }
+                    println!("{} file(s) would change (use --write to apply)", changed.len());
+                }
+            } else {
+                let u = lisp_sitter::transform::rename(&reg, &path, &old, &new, ref_mode)?;
+                if cf { let d = lisp_sitter::ops::diff_text(&lisp_sitter::ops::read_file(&path)?, &u, &path); if !d.is_empty() { eprint!("{d}"); } confirm_or_abort(); }
+                if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); }
+            }
         }
         Command::Wrap { path, symbol, r#in, bindings, condition, write } => { commands::wrap(&reg, &path, &symbol, &r#in, bindings.as_deref(), condition.as_deref(), write)?; }
         Command::Remove { path, symbol, keep_calls, write } => { let u = lisp_sitter::transform::remove_form(&reg, &path, &symbol, keep_calls)?; if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); } }
@@ -208,6 +234,12 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Raise { path, symbol, pattern, write } => {
             let u = lisp_sitter::transform::raise(&reg, &path, &symbol, &pattern)?;
             if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); }
+        }
+        Command::Analyze { path, unused, unresolved, arity } => {
+            use lisp_sitter::analyze::Options;
+            let opt = if !unused && !unresolved && !arity { Options::all() } else { Options { unused, unresolved, arity } };
+            let paths = lisp_sitter::ops::expand_paths(&path);
+            print!("{}", lisp_sitter::analyze::analyze(&reg, &paths, opt)?);
         }
         Command::CheckNode { lang, body, body_file } => { println!("{}", lisp_sitter::ops::check_node_by_lang(&reg, &lang, &read_text(body, body_file)?)?); }
         Command::Completions { shell } => { let s: clap_complete::Shell = shell.parse().map_err(|e| anyhow::anyhow!("unknown shell: {e}"))?; let mut cmd = Cli::command(); clap_complete::generate(s, &mut cmd, "lisp-sitter", &mut std::io::stdout()); }

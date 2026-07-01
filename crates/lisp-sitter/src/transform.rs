@@ -148,9 +148,52 @@ fn replace_head_symbol(plugin: &dyn LanguagePlugin, c: &str, old: &str, new: &st
 
 pub fn rename(reg: &Registry, path: &str, old: &str, new: &str, refs: RefsMode) -> Result<String, Error> {
     let c = ops_read(path)?; let p = crate::ops::resolve_plugin(reg, path, None)?;
-    let u = replace_node_header(p, &c, old, new)?;
+    rename_content(p, &c, old, new, refs)
+}
+
+/// Rename the definition header of `old` plus its references within one file's
+/// `content`. Shared by single-file [`rename`] and the per-file pass of
+/// [`rename_project`].
+fn rename_content(p: &dyn LanguagePlugin, c: &str, old: &str, new: &str, refs: RefsMode) -> Result<String, Error> {
+    let u = replace_node_header(p, c, old, new)?;
     let u = replace_head_symbol(p, &u, old, new, refs);
-    p.check_file(&u).map_err(|e| match e { Error::Syntax(d) => Error::SyntaxAfterEdit { operation: "rename".into(), detail: d }, o => o, })?; Ok(u)
+    p.check_file(&u).map_err(|e| match e { Error::Syntax(d) => Error::SyntaxAfterEdit { operation: "rename".into(), detail: d }, o => o, })?;
+    Ok(u)
+}
+
+/// Does any reference to `old` in `c` fall under the given `refs` mode?
+fn touches_symbol(p: &dyn LanguagePlugin, c: &str, old: &str, refs: RefsMode) -> bool {
+    p.find_symbol_refs(c, old).iter().any(|r| match r.kind {
+        RefKind::CallHead => true,
+        RefKind::SharpQuote => refs != RefsMode::HeadOnly,
+        RefKind::Quote => refs == RefsMode::AllRefs,
+    })
+}
+
+/// Project-wide rename across `paths`. Files that define `old` get a full
+/// rename (definition header + references); all other files get reference-only
+/// updates. Returns `(path, updated_content)` for every file whose content
+/// changed — callers decide whether to write or preview. Errors if no file in
+/// the set defines `old`.
+pub fn rename_project(reg: &Registry, paths: &[String], old: &str, new: &str, refs: RefsMode) -> Result<Vec<(String, String)>, Error> {
+    let mut changed = Vec::new();
+    let mut found_def = false;
+    for path in paths {
+        let Ok(c) = ops_read(path) else { continue };
+        let Ok(p) = crate::ops::resolve_plugin(reg, path, None) else { continue };
+        let u = if p.node_bounds(&c, old).is_ok() {
+            found_def = true;
+            rename_content(p, &c, old, new, refs)?
+        } else {
+            if !touches_symbol(p, &c, old, refs) { continue; }
+            let u = replace_head_symbol(p, &c, old, new, refs);
+            p.check_file(&u).map_err(|e| match e { Error::Syntax(d) => Error::SyntaxAfterEdit { operation: "rename".into(), detail: d }, o => o, })?;
+            u
+        };
+        if u != c { changed.push((path.clone(), u)); }
+    }
+    if !found_def { return Err(Error::FormNotFound(old.to_string())); }
+    Ok(changed)
 }
 
 fn replace_node_header(p: &dyn lisp_sitter_core::LanguagePlugin, c: &str, old: &str, new: &str) -> Result<String, Error> {

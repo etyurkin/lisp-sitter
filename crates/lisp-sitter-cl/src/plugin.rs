@@ -155,6 +155,53 @@ impl LanguagePlugin for CommonLispPlugin {
             .map(|tree| lisp_sitter_core::treesit_util::find_error_nodes(content, tree.root_node()))
             .unwrap_or_default()
     }
+
+    fn is_known_global(&self, name: &str) -> bool {
+        is_cl_global(name)
+    }
+}
+
+/// Curated (non-exhaustive) set of Common Lisp special operators and common
+/// standard functions, used by project analysis to suppress unresolved-call
+/// warnings.
+fn is_cl_global(name: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    let set = SET.get_or_init(|| {
+        [
+            // special operators / macros
+            "if", "when", "unless", "cond", "case", "ccase", "ecase", "and", "or", "not", "progn",
+            "prog1", "prog2", "let", "let*", "flet", "labels", "macrolet", "block", "return",
+            "return-from", "lambda", "function", "quote", "setq", "setf", "psetf", "incf", "decf",
+            "push", "pop", "dolist", "dotimes", "do", "do*", "loop", "multiple-value-bind",
+            "destructuring-bind", "handler-case", "handler-bind", "unwind-protect", "catch", "throw",
+            "ignore-errors", "eval-when", "declaim", "declare", "the", "defun", "defmacro", "defvar",
+            "defparameter", "defconstant", "defclass", "defgeneric", "defmethod", "defstruct", "in-package",
+            "with-slots", "with-accessors", "with-open-file", "with-output-to-string",
+            "apply", "funcall", "mapcar", "mapc", "mapcan", "reduce", "remove-if", "remove-if-not", "find-if",
+            // list / sequence
+            "car", "cdr", "caar", "cadr", "cddr", "cons", "list", "list*", "append", "nth", "nthcdr",
+            "first", "second", "third", "rest", "length", "reverse", "nreverse", "member", "assoc",
+            "elt", "aref", "svref", "vector", "make-array", "make-list", "last", "butlast", "subseq",
+            "remove", "delete", "find", "position", "count", "sort", "mapcar", "every", "some", "notany",
+            // predicates / equality
+            "eq", "eql", "equal", "equalp", "null", "atom", "consp", "listp", "stringp", "numberp",
+            "integerp", "symbolp", "functionp", "boundp", "fboundp", "zerop", "plusp", "minusp",
+            "typep", "values",
+            // arithmetic / strings
+            "+", "-", "*", "/", "mod", "rem", "1+", "1-", "max", "min", "abs", "expt", "sqrt", "floor",
+            "ceiling", "round", "truncate", "=", "/=", "<", ">", "<=", ">=", "concatenate", "format",
+            "string", "string=", "string<", "char", "substring", "parse-integer", "write-to-string",
+            "symbol-name", "intern", "make-symbol", "gensym",
+            // io / hash
+            "print", "princ", "prin1", "write", "write-line", "write-string", "error", "warn",
+            "make-hash-table", "gethash", "remhash", "maphash", "getf", "get",
+        ]
+        .into_iter()
+        .collect()
+    });
+    set.contains(name)
 }
 
 #[cfg(test)]
