@@ -167,6 +167,21 @@ fn strip_sigils(s: &str) -> String {
     s.trim_start_matches(['\'', '`', ':']).to_string()
 }
 
+/// True for `(define (name args…) …)` or `(define-values ((a) …) …)`.
+pub fn is_curried_define(form_text: &str) -> bool {
+    let Some(inner) = form_text.trim_start().strip_prefix('(') else {
+        return false;
+    };
+    let inner = inner.trim_start();
+    let Some((head, rest)) = read_token(inner) else {
+        return false;
+    };
+    if !matches!(head.as_str(), "define" | "define-values") {
+        return false;
+    }
+    rest.trim_start().starts_with('(')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +195,13 @@ mod tests {
             Definer::second("defalias"),
             Definer::new("define-library", NameStrategy::LibraryList),
         ])
+    }
+
+    #[test]
+    fn curried_define_detection() {
+        assert!(is_curried_define("(define (f x) (+ x 1))"));
+        assert!(!is_curried_define("(define x 1)"));
+        assert!(is_curried_define("(define-values ((a b)) (+ a b))"));
     }
 
     #[test]

@@ -79,9 +79,23 @@ enum Command {
     /// Extract a sub-expression into a new function.
     /// Example: lisp-sitter extract foo.el my-func --pattern '(* x x)' --name square --write
     Extract { path: String, symbol: String, #[arg(long)] pattern: String, #[arg(long)] name: String, #[arg(long)] params: Option<String>, #[arg(long)] write: bool },
-    /// Find all callers of a symbol in a file.
+    /// Find all callers of a symbol. PATH may be a file, directory, or glob.
     /// Example: lisp-sitter callers foo.el my-func
+    ///          lisp-sitter callers src/ my-func
     Callers { path: String, symbol: String },
+    /// Symbols called directly from a definition's body across PATH.
+    /// Example: lisp-sitter callees src/ my-func
+    Callees { path: String, symbol: String },
+    /// Source + callers + callees for a symbol across PATH.
+    /// Example: lisp-sitter explore src/ my-func
+    Explore { path: String, symbol: String },
+    /// Transitive callers (blast radius) of a symbol across PATH.
+    /// Example: lisp-sitter impact src/ my-func --depth 5
+    Impact { path: String, symbol: String, #[arg(long, default_value_t = lisp_sitter::graph::default_impact_depth())] depth: usize },
+    /// Map git changes since REF to touched symbols (and optional blast radius).
+    /// Example: lisp-sitter diff main src/
+    ///          lisp-sitter diff main src/ --impact
+    Diff { r#ref: String, path: String, #[arg(long, default_value_t = lisp_sitter::graph::default_impact_depth())] depth: usize, #[arg(long, help = "Include transitive caller blast radius for each touched symbol")] impact: bool },
     /// Install a git pre-commit hook that runs lisp-sitter check on Lisp files.
     /// Example: lisp-sitter init-git-hook
     InitGitHook,
@@ -209,18 +223,30 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Substitute { path, symbol, pattern, replacement, write } => { let u = lisp_sitter::transform::substitute(&reg, &path, &symbol, &pattern, &replacement)?; if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); } }
         Command::Extract { path, symbol, pattern, name, params, write } => { let p: Vec<&str> = params.as_deref().unwrap_or("").split(',').filter(|s| !s.is_empty()).collect(); let u = lisp_sitter::transform::extract(&reg, &path, &symbol, &pattern, &name, &p)?; if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); } }
         Command::Callers { path, symbol } => {
-            if j { let c = lisp_sitter::ops::read_file(&path)?; let p = lisp_sitter::ops::resolve_plugin(&reg, &path, None)?;
-                let def = p.node_bounds(&c, &symbol).ok();
-                let forms = p.list_forms(&c)?;
-                let r: Vec<_> = p.find_symbol_refs(&c, &symbol).into_iter()
-                    .filter(|sr| sr.kind == lisp_sitter_core::RefKind::CallHead)
-                    .filter(|sr| !def.is_some_and(|(ds, de)| sr.form_start >= ds && sr.form_start < de))
-                    .filter_map(|sr| forms.iter().find(|f| sr.form_start >= f.start && sr.form_start < f.end)
-                        .map(|o| serde_json::json!({"in": o.label, "label": format!("{} calls {}", o.label, symbol), "start": sr.form_start})))
-                    .collect();
-                println!("{}", serde_json::to_string_pretty(&r)?);
-            } else { println!("{}", lisp_sitter::ops::callers(&reg, &path, &symbol)?); }
+            if j {
+                let out = lisp_sitter::graph::callers(&reg, &path, &symbol)?;
+                if std::path::Path::new(&path).is_dir() || path.contains('*') || path.contains('?') {
+                    let lines: Vec<_> = out.lines().filter(|l| !l.is_empty()).map(|l| serde_json::json!({"label": l})).collect();
+                    println!("{}", serde_json::to_string_pretty(&lines)?);
+                } else {
+                    let c = lisp_sitter::ops::read_file(&path)?;
+                    let p = lisp_sitter::ops::resolve_plugin(&reg, &path, None)?;
+                    let def = p.node_bounds(&c, &symbol).ok();
+                    let forms = p.list_forms(&c)?;
+                    let r: Vec<_> = p.find_symbol_refs(&c, &symbol).into_iter()
+                        .filter(|sr| sr.kind == lisp_sitter_core::RefKind::CallHead)
+                        .filter(|sr| !def.is_some_and(|(ds, de)| sr.form_start >= ds && sr.form_start < de))
+                        .filter_map(|sr| forms.iter().find(|f| sr.form_start >= f.start && sr.form_start < f.end)
+                            .map(|o| serde_json::json!({"in": o.label, "label": format!("{} calls {}", o.label, symbol), "start": sr.form_start})))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&r)?);
+                }
+            } else { println!("{}", lisp_sitter::graph::callers(&reg, &path, &symbol)?); }
         }
+        Command::Callees { path, symbol } => { println!("{}", lisp_sitter::graph::callees(&reg, &path, &symbol)?); }
+        Command::Explore { path, symbol } => { print!("{}", lisp_sitter::graph::explore(&reg, &path, &symbol)?); }
+        Command::Impact { path, symbol, depth } => { print!("{}", lisp_sitter::graph::impact(&reg, &path, &symbol, depth)?); }
+        Command::Diff { r#ref, path, depth, impact } => { print!("{}", lisp_sitter::graph::diff(&reg, &path, &r#ref, depth, impact)?); }
         Command::InitGitHook => { commands::init_git_hook()?; }
         Command::Instrument { path, symbol, r#with, at, wrap, write } => { let u = lisp_sitter::transform::instrument(&reg, &path, &symbol, r#with.as_deref(), at.as_deref(), wrap.as_deref())?; if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); } }
         Command::Flatten { path, symbol, write } => { let u = lisp_sitter::transform::flatten(&reg, &path, &symbol)?; if write { lisp_sitter::ops::atomic_write(&path, &u)?; println!("Wrote {path}"); } else { print!("{u}"); } }

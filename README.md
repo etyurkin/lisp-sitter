@@ -120,6 +120,11 @@ lisp-sitter completions fish | source    # fish
 | `rename PATH OLD NEW` | Rename a form, its call sites, and `#'old`/`'old` references. `PATH` may be a file, directory, or glob for a **project-wide** rename (definition + every reference across all matching files). `--refs` also renames plain `'old`; `--no-refs` renames only head-position call sites |
 | `wrap PATH SYMBOL` | Wrap body in `progn`, `let`, or `if` |
 | `analyze PATH` | Project-wide semantic analysis over a directory or glob: unused definitions, unresolved calls, and arity mismatches. `--unused` / `--unresolved` / `--arity` to run a subset (default: all) |
+| `callers PATH SYMBOL` | Callers of a symbol. Single file, or project-wide when `PATH` is a directory/glob |
+| `callees PATH SYMBOL` | Symbols called directly from a definition's body across `PATH` |
+| `explore PATH SYMBOL` | Source + definitions + callers + callees for one symbol |
+| `impact PATH SYMBOL` | Transitive callers (blast radius). `--depth N` (default 5) |
+| `diff REF PATH` | Git diff since `REF` → touched symbols in `PATH`. `--impact` adds blast radius per symbol |
 | `check PATH` | Validate file → `OK` or syntax error on stderr |
 | `check PATH --semantic` | Deep validation — docstrings, missing `provide`/`in-package`/library export warnings (elisp, commonlisp, scheme) |
 | `check-node` | Validate one form; `--lang elisp\|commonlisp\|scheme` |
@@ -180,12 +185,22 @@ addressable by `bounds`/`get`/`replace`/`rename`. Each is treated like `defun`/
 
 ## Project-wide operations
 
-`rename` and `analyze` operate across a whole project when given a directory or glob.
+`rename`, `analyze`, and the call-graph commands operate across a whole project when given a directory or glob.
 
 ```bash
 # Rename a function and every call site across the project (preview, then apply)
 lisp-sitter rename src/ old-name new-name
 lisp-sitter rename src/ old-name new-name --write
+
+# Call graph navigation (scan-on-demand, no index file)
+lisp-sitter callers src/ my-func
+lisp-sitter callees src/ my-func
+lisp-sitter explore src/ my-func
+lisp-sitter impact src/ my-func --depth 5
+
+# Git-aware: symbols touched by changes since main (+ optional blast radius)
+lisp-sitter diff main src/
+lisp-sitter diff main src/ --impact
 
 # Semantic analysis: unused definitions, unresolved calls, arity mismatches
 lisp-sitter analyze src/
@@ -274,6 +289,11 @@ Expose the same structural tools to Cursor, Claude Code, or any MCP client:
 | `structural_rename` | Rename a form, call sites, and refs (`refs: true` for plain `'old`) |
 | `structural_rename_project` | Rename a symbol across a directory or glob (definition + every reference); diff preview unless `write: true` |
 | `structural_analyze` | Project-wide unused-definition, unresolved-call, and arity analysis over a directory or glob |
+| `structural_callers` | Callers of a symbol (`path` = file, directory, or glob) |
+| `structural_callees` | Direct callees from a symbol's definition(s) across the project |
+| `structural_explore` | Source + callers + callees for one symbol |
+| `structural_impact` | Transitive callers (blast radius); optional `depth` |
+| `structural_diff` | Git diff since `ref` → touched symbols; `impact: true` for blast radius |
 | `structural_wrap` | Wrap a form's body in a construct |
 
 All tools accept `write: true` to save in place. `structural_replace`, `structural_insert`, and `structural_format` accept `diff: true` to show a line-based diff before applying.

@@ -87,6 +87,12 @@ struct ConvertLetArgs { path: String, symbol: String, to: String, #[serde(defaul
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct InstrumentArgs { path: String, symbol: String, #[serde(default)] #[schemars(description = "Tracing form")] r#with: Option<String>, #[serde(default)] #[schemars(description = "Sub-expression")] at: Option<String>, #[serde(default)] #[schemars(description = "Wrapper")] wrap: Option<String>, #[serde(default)] write: bool }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ImpactArgs { path: String, symbol: String, #[serde(default)] depth: Option<i64> }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DiffArgs { path: String, r#ref: String, #[serde(default)] depth: Option<i64>, #[serde(default)] impact: bool }
+
 fn tool_result(r: Result<String, lisp_sitter_core::Error>) -> Result<String, String> { match r { Ok(t) => Ok(t), Err(e) => Err(e.to_string()) } }
 
 #[tool_router]
@@ -246,8 +252,26 @@ impl LispSitterMcp {
         if args.write { ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?; Ok(format!("Wrote {}", args.path)) } else { Ok(u) }
     }
 
-    #[tool(description = "Find all callers of a symbol in a file.")]
-    async fn structural_callers(&self, Parameters(args): Parameters<PathSymbolArgs>) -> Result<String, String> { tool_result(ops::callers(&self.reg, &args.path, &args.symbol)) }
+    #[tool(description = "Find all callers of a symbol. path may be a file, directory, or glob.")]
+    async fn structural_callers(&self, Parameters(args): Parameters<PathSymbolArgs>) -> Result<String, String> { tool_result(lisp_sitter::graph::callers(&self.reg, &args.path, &args.symbol)) }
+
+    #[tool(description = "Symbols called directly from a definition's body across path (directory or glob).")]
+    async fn structural_callees(&self, Parameters(args): Parameters<PathSymbolArgs>) -> Result<String, String> { tool_result(lisp_sitter::graph::callees(&self.reg, &args.path, &args.symbol)) }
+
+    #[tool(description = "Source, definitions, callers, and callees for a symbol across path.")]
+    async fn structural_explore(&self, Parameters(args): Parameters<PathSymbolArgs>) -> Result<String, String> { tool_result(lisp_sitter::graph::explore(&self.reg, &args.path, &args.symbol)) }
+
+    #[tool(description = "Transitive callers (blast radius) of a symbol across path.")]
+    async fn structural_impact(&self, Parameters(args): Parameters<ImpactArgs>) -> Result<String, String> {
+        let depth = args.depth.unwrap_or(lisp_sitter::graph::default_impact_depth() as i64).max(0) as usize;
+        tool_result(lisp_sitter::graph::impact(&self.reg, &args.path, &args.symbol, depth))
+    }
+
+    #[tool(description = "Map git changes since ref to touched symbols in path. Set impact=true for blast radius per symbol.")]
+    async fn structural_diff(&self, Parameters(args): Parameters<DiffArgs>) -> Result<String, String> {
+        let depth = args.depth.unwrap_or(lisp_sitter::graph::default_impact_depth() as i64).max(0) as usize;
+        tool_result(lisp_sitter::graph::diff(&self.reg, &args.path, &args.r#ref, depth, args.impact))
+    }
 
     #[tool(description = "Instrument a form with tracing (--with for body, --at/--wrap for sub-expressions).")]
     async fn structural_instrument(&self, Parameters(args): Parameters<InstrumentArgs>) -> Result<String, String> {
@@ -509,6 +533,26 @@ mod tests {
         })).await;
         let out = r.unwrap();
         assert!(out.contains("(progn"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_structural_explore() {
+        let s = mcp();
+        let dir = std::env::temp_dir().join(format!("lisp-sitter-mcp-explore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.el");
+        std::fs::write(&p, "(defun f () (g))\n").unwrap();
+        let p2 = dir.join("b.el");
+        std::fs::write(&p2, "(defun g () 1)\n").unwrap();
+        let r = s.structural_explore(Parameters(PathSymbolArgs {
+            path: dir.to_str().unwrap().to_string(),
+            symbol: "g".into(),
+        })).await;
+        let out = r.unwrap();
+        assert!(out.contains("callers"), "{out}");
+        assert!(out.contains("f"), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
