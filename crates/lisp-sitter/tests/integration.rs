@@ -349,3 +349,116 @@ fn stdin_path_outputs_only_result() {
     assert_eq!(run(&["--lang", "elisp", "check", "-"]), "-: OK");
     assert_eq!(run(&["check-node", "--lang", "elisp", "--body-file", "-"]), "OK");
 }
+
+// ── cross-file rename ─────────────────────────────────────────────────
+
+#[test]
+fn rename_project_updates_definition_and_all_callers() {
+    let reg = reg();
+    let dir = std::env::temp_dir().join(format!("lisp-sitter-integ-{}-rename-proj", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let a = dir.join("a.el");
+    let b = dir.join("b.el");
+    std::fs::write(&a, "(defun helper (x)\n  (* x x))\n\n(defun main ()\n  (helper 3))\n").unwrap();
+    std::fs::write(&b, "(defun other ()\n  (helper 5))\n").unwrap();
+
+    let paths = ops::expand_paths(dir.to_str().unwrap());
+    let changed = transform::rename_project(&reg, &paths, "helper", "square", transform::RefsMode::HeadAndSharp).unwrap();
+    assert_eq!(changed.len(), 2, "both files should change");
+    for (p, c) in &changed {
+        ops::atomic_write(p, c).unwrap();
+    }
+
+    let a_out = std::fs::read_to_string(&a).unwrap();
+    assert!(a_out.contains("(defun square (x)"), "definition renamed: {a_out}");
+    assert!(a_out.contains("(square 3)"), "same-file caller renamed: {a_out}");
+    assert!(!a_out.contains("helper"), "no stale references: {a_out}");
+
+    let b_out = std::fs::read_to_string(&b).unwrap();
+    assert!(b_out.contains("(square 5)"), "cross-file caller renamed: {b_out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rename_project_errors_when_symbol_undefined() {
+    let reg = reg();
+    let dir = std::env::temp_dir().join(format!("lisp-sitter-integ-{}-rename-missing", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.el"), "(defun foo () 1)\n").unwrap();
+
+    let paths = ops::expand_paths(dir.to_str().unwrap());
+    let r = transform::rename_project(&reg, &paths, "nonexistent", "bar", transform::RefsMode::HeadAndSharp);
+    assert!(matches!(r, Err(lisp_sitter_core::Error::FormNotFound(_))), "{r:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── project analysis ──────────────────────────────────────────────────
+
+#[test]
+fn analyze_reports_unused_arity_and_unresolved() {
+    let reg = reg();
+    let dir = std::env::temp_dir().join(format!("lisp-sitter-integ-{}-analyze", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("a.el");
+    std::fs::write(&p, "(defun add (a b) (+ a b))\n(defun lonely () 1)\n(defun go () (add 1) (mystery 2))\n").unwrap();
+
+    let paths = ops::expand_paths(dir.to_str().unwrap());
+    let report = lisp_sitter::analyze::analyze(&reg, &paths, lisp_sitter::analyze::Options::all()).unwrap();
+    assert!(report.contains("unused") && report.contains("lonely"), "{report}");
+    assert!(report.contains("arity") && report.contains("`add`"), "{report}");
+    assert!(report.contains("unresolved") && report.contains("mystery"), "{report}");
+    // a builtin call must not be reported as unresolved
+    assert!(!report.contains("`+`"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn analyze_suppresses_autoloaded_and_required() {
+    let reg = reg();
+    let dir = std::env::temp_dir().join(format!(
+        "lisp-sitter-integ-{}-analyze2",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // autoloaded form should NOT appear as unused even with zero internal callers
+    let p = dir.join("pub.el");
+    std::fs::write(
+        &p,
+        ";;;###autoload\n(defun my-public-api () 1)\n\
+         (defun my-internal () (my-public-api))\n",
+    )
+    .unwrap();
+
+    let paths = ops::expand_paths(dir.to_str().unwrap());
+    let report =
+        lisp_sitter::analyze::analyze(&reg, &paths, lisp_sitter::analyze::Options::all())
+            .unwrap();
+    assert!(
+        !report.contains("my-public-api"),
+        "autoloaded form should be suppressed: {report}"
+    );
+
+    // symbol with a prefix from a required package must NOT appear as unresolved
+    let p2 = dir.join("consumer.el");
+    std::fs::write(
+        &p2,
+        "(require 'dash)\n\
+         (defun my-consumer () (dash-map (lambda (x) x) '(1 2 3)))\n",
+    )
+    .unwrap();
+
+    let paths2 = ops::expand_paths(dir.to_str().unwrap());
+    let report2 =
+        lisp_sitter::analyze::analyze(&reg, &paths2, lisp_sitter::analyze::Options::all())
+            .unwrap();
+    assert!(
+        !report2.contains("dash-map"),
+        "required-prefix symbol should be suppressed: {report2}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
