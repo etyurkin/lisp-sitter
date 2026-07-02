@@ -14,7 +14,14 @@ pub struct Call {
 /// symbol, the byte offset of the opening paren, and the argument count.
 pub fn scan_calls(content: &str, dialect: Dialect) -> Vec<Call> {
     let mut out = Vec::new();
-    scan_range(content, content.as_bytes(), 0, content.len(), dialect, &mut out);
+    scan_range(
+        content,
+        content.as_bytes(),
+        0,
+        content.len(),
+        dialect,
+        &mut out,
+    );
     out
 }
 
@@ -54,12 +61,19 @@ pub fn list_children(b: &[u8], open: usize, close: usize, d: Dialect) -> Vec<(us
 
 fn scan_list(content: &str, b: &[u8], open: usize, close: usize, d: Dialect, out: &mut Vec<Call>) {
     let kids = list_children(b, open, close, d);
-    let Some(&(hs, he)) = kids.first() else { return };
+    let Some(&(hs, he)) = kids.first() else {
+        return;
+    };
 
-    let head = (!matches!(b[hs], b'(' | b'"' | b'\'' | b'`' | b',' | b'#')).then(|| &content[hs..he]);
+    let head =
+        (!matches!(b[hs], b'(' | b'"' | b'\'' | b'`' | b',' | b'#')).then(|| &content[hs..he]);
     if let Some(h) = head {
         if is_call_name(h) {
-            out.push(Call { name: h.to_string(), pos: open, argc: kids.len() - 1 });
+            out.push(Call {
+                name: h.to_string(),
+                pos: open,
+                argc: kids.len() - 1,
+            });
         }
     }
 
@@ -90,11 +104,17 @@ fn scan_list(content: &str, b: &[u8], open: usize, close: usize, d: Dialect, out
 }
 
 fn is_fn_def_head(h: &str) -> bool {
-    matches!(h, "defun" | "defsubst" | "defmacro" | "cl-defun" | "cl-defmacro")
+    matches!(
+        h,
+        "defun" | "defsubst" | "defmacro" | "cl-defun" | "cl-defmacro"
+    )
 }
 
 fn is_let_head(h: &str) -> bool {
-    matches!(h, "let" | "let*" | "letrec" | "letrec*" | "when-let" | "if-let" | "cl-flet" | "cl-labels")
+    matches!(
+        h,
+        "let" | "let*" | "letrec" | "letrec*" | "when-let" | "if-let" | "cl-flet" | "cl-labels"
+    )
 }
 
 pub fn skip_ws_comments(b: &[u8], mut i: usize, end: usize) -> usize {
@@ -116,7 +136,9 @@ pub fn skip_ws_comments(b: &[u8], mut i: usize, end: usize) -> usize {
 }
 
 pub fn is_call_name(s: &str) -> bool {
-    let Some(c0) = s.chars().next() else { return false };
+    let Some(c0) = s.chars().next() else {
+        return false;
+    };
     if matches!(c0, ':' | '#' | '"') || c0.is_ascii_digit() {
         return false;
     }

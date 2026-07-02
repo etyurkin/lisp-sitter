@@ -26,7 +26,11 @@ pub struct Options {
 
 impl Options {
     pub fn all() -> Self {
-        Self { unused: true, unresolved: true, arity: true }
+        Self {
+            unused: true,
+            unresolved: true,
+            arity: true,
+        }
     }
 }
 
@@ -72,7 +76,9 @@ fn has_autoload_cookie(content: &str, form_start: usize) -> bool {
     for line in before.lines().rev() {
         let t = line.trim();
         if t.is_empty() || t.starts_with(';') {
-            if t.contains("###autoload") { return true; }
+            if t.contains("###autoload") {
+                return true;
+            }
         } else {
             break;
         }
@@ -89,8 +95,8 @@ fn scan_exports(content: &str, plugin_id: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     match plugin_id {
         "commonlisp" => collect_cl_exports(content, &mut out),
-        "scheme"     => collect_scheme_exports(content, &mut out),
-        _            => {}  // elisp uses autoload cookie per-form
+        "scheme" => collect_scheme_exports(content, &mut out),
+        _ => {} // elisp uses autoload cookie per-form
     }
     out
 }
@@ -100,9 +106,17 @@ fn collect_cl_exports(content: &str, out: &mut HashSet<String>) {
     let mut i = 0;
     while i < b.len() {
         i = skip_ws_comments(b, i, b.len());
-        if i >= b.len() { break; }
-        if b[i] != b'(' { let n = skip_sexp_in(b, i, Dialect::Generic).unwrap_or(i + 1); i = n.max(i + 1); continue; }
-        let close = skip_sexp_in(b, i, Dialect::Generic).unwrap_or(b.len()).min(b.len());
+        if i >= b.len() {
+            break;
+        }
+        if b[i] != b'(' {
+            let n = skip_sexp_in(b, i, Dialect::Generic).unwrap_or(i + 1);
+            i = n.max(i + 1);
+            continue;
+        }
+        let close = skip_sexp_in(b, i, Dialect::Generic)
+            .unwrap_or(b.len())
+            .min(b.len());
         let kids = list_children(b, i, close, Dialect::Generic);
         if let Some(&(hs, he)) = kids.first() {
             if content[hs..he].eq_ignore_ascii_case("export") {
@@ -122,9 +136,17 @@ fn collect_scheme_exports(content: &str, out: &mut HashSet<String>) {
     let mut i = 0;
     while i < b.len() {
         i = skip_ws_comments(b, i, b.len());
-        if i >= b.len() { break; }
-        if b[i] != b'(' { let n = skip_sexp_in(b, i, Dialect::Generic).unwrap_or(i + 1); i = n.max(i + 1); continue; }
-        let close = skip_sexp_in(b, i, Dialect::Generic).unwrap_or(b.len()).min(b.len());
+        if i >= b.len() {
+            break;
+        }
+        if b[i] != b'(' {
+            let n = skip_sexp_in(b, i, Dialect::Generic).unwrap_or(i + 1);
+            i = n.max(i + 1);
+            continue;
+        }
+        let close = skip_sexp_in(b, i, Dialect::Generic)
+            .unwrap_or(b.len())
+            .min(b.len());
         let kids = list_children(b, i, close, Dialect::Generic);
         if let Some(&(hs, he)) = kids.first() {
             if &content[hs..he] == "define-library" {
@@ -136,7 +158,9 @@ fn collect_scheme_exports(content: &str, out: &mut HashSet<String>) {
                             if &content[ihs..ihe] == "export" {
                                 for (ss, se) in ik.iter().skip(1) {
                                     let sym = content[*ss..*se].trim();
-                                    if is_call_name(sym) { out.insert(sym.to_string()); }
+                                    if is_call_name(sym) {
+                                        out.insert(sym.to_string());
+                                    }
                                 }
                             }
                         }
@@ -152,21 +176,38 @@ fn collect_scheme_exports(content: &str, out: &mut HashSet<String>) {
 /// `'(a b c)` or just a bare atom.  Used to parse `(export '(foo bar))`.
 fn collect_symbol_list(content: &str, b: &[u8], s: usize, e: usize, out: &mut HashSet<String>) {
     let s = skip_ws_comments(b, s, e);
-    if s >= e { return; }
+    if s >= e {
+        return;
+    }
     // skip leading quote / quasiquote
-    let s = if matches!(b[s], b'\'' | b'`') { s + 1 } else { s };
+    let s = if matches!(b[s], b'\'' | b'`') {
+        s + 1
+    } else {
+        s
+    };
     let s = skip_ws_comments(b, s, e);
-    if s >= e { return; }
+    if s >= e {
+        return;
+    }
     if b[s] == b'(' {
         let inner_close = skip_sexp_in(b, s, Dialect::Generic).unwrap_or(e).min(e);
         for (ks, ke) in list_children(b, s, inner_close, Dialect::Generic) {
-            let sym = content[ks..ke].trim_start_matches('#').trim_start_matches(':');
-            if is_call_name(sym) { out.insert(sym.to_string()); }
+            let sym = content[ks..ke]
+                .trim_start_matches('#')
+                .trim_start_matches(':');
+            if is_call_name(sym) {
+                out.insert(sym.to_string());
+            }
         }
     } else {
         // bare atom like `(export #:foo)` or `(export :foo)`
-        let sym = content[s..e].trim().trim_start_matches('#').trim_start_matches(':');
-        if is_call_name(sym) { out.insert(sym.to_string()); }
+        let sym = content[s..e]
+            .trim()
+            .trim_start_matches('#')
+            .trim_start_matches(':');
+        if is_call_name(sym) {
+            out.insert(sym.to_string());
+        }
     }
 }
 
@@ -186,7 +227,9 @@ fn scan_required_prefixes(content: &str, plugin_id: &str) -> HashSet<String> {
     let mut i = 0;
     while i < b.len() {
         i = skip_ws_comments(b, i, b.len());
-        if i >= b.len() { break; }
+        if i >= b.len() {
+            break;
+        }
         if b[i] != b'(' {
             let n = skip_sexp_in(b, i, d).unwrap_or(i + 1);
             i = n.max(i + 1);
@@ -199,23 +242,37 @@ fn scan_required_prefixes(content: &str, plugin_id: &str) -> HashSet<String> {
     out
 }
 
-fn extract_require_prefixes(content: &str, b: &[u8], open: usize, close: usize, d: Dialect, plugin_id: &str, out: &mut HashSet<String>) {
+fn extract_require_prefixes(
+    content: &str,
+    b: &[u8],
+    open: usize,
+    close: usize,
+    d: Dialect,
+    plugin_id: &str,
+    out: &mut HashSet<String>,
+) {
     let kids = list_children(b, open, close, d);
-    let Some(&(hs, he)) = kids.first() else { return };
+    let Some(&(hs, he)) = kids.first() else {
+        return;
+    };
     let head = &content[hs..he];
     match (plugin_id, head) {
         // (require 'foo-bar) or (require 'foo-bar nil t)
         (_, "require") => {
             if let Some(&(s, e)) = kids.get(1) {
                 let sym = unquote_symbol(&content[s..e]);
-                if !sym.is_empty() { out.insert(sym.to_string()); }
+                if !sym.is_empty() {
+                    out.insert(sym.to_string());
+                }
             }
         }
         // (use-package foo-bar …)
         (_, "use-package") => {
             if let Some(&(s, e)) = kids.get(1) {
                 let sym = content[s..e].trim();
-                if is_call_name(sym) { out.insert(sym.to_string()); }
+                if is_call_name(sym) {
+                    out.insert(sym.to_string());
+                }
             }
         }
         // (defpackage :my-pkg (:use :cl :another))
@@ -228,7 +285,9 @@ fn extract_require_prefixes(content: &str, b: &[u8], open: usize, close: usize, 
                         if kw == ":use" || kw == "use" {
                             for (us, ue) in ik.iter().skip(1) {
                                 let sym = unquote_symbol(content[*us..*ue].trim());
-                                if !sym.is_empty() { out.insert(sym.to_string()); }
+                                if !sym.is_empty() {
+                                    out.insert(sym.to_string());
+                                }
                             }
                         }
                     }
@@ -243,7 +302,9 @@ fn extract_require_prefixes(content: &str, b: &[u8], open: usize, close: usize, 
                     let ik = list_children(b, *ks, *ke, d);
                     if let Some(&(ls, le)) = ik.first() {
                         let sym = content[ls..le].trim();
-                        if is_call_name(sym) { out.insert(sym.to_string()); }
+                        if is_call_name(sym) {
+                            out.insert(sym.to_string());
+                        }
                     }
                 }
             }
@@ -255,8 +316,16 @@ fn extract_require_prefixes(content: &str, b: &[u8], open: usize, close: usize, 
 /// Strip leading quote/quasiquote and colon from a symbol token.
 fn unquote_symbol(s: &str) -> &str {
     let s = s.trim();
-    let s = if let Some(r) = s.strip_prefix('\'') { r } else { s };
-    let s = if let Some(r) = s.strip_prefix(':') { r } else { s };
+    let s = if let Some(r) = s.strip_prefix('\'') {
+        r
+    } else {
+        s
+    };
+    let s = if let Some(r) = s.strip_prefix(':') {
+        r
+    } else {
+        s
+    };
     s.trim()
 }
 
@@ -275,7 +344,9 @@ fn matches_required_prefix(symbol: &str, known_prefixes: &HashSet<String>) -> bo
         // bare `pkg:sym` where the prefix IS the whole package qualifier
         if let Some(colon) = symbol.find(':') {
             let pkg = symbol[..colon].trim_start_matches(':');
-            if pkg.eq_ignore_ascii_case(prefix) { return true; }
+            if pkg.eq_ignore_ascii_case(prefix) {
+                return true;
+            }
         }
     }
     false
@@ -290,9 +361,15 @@ pub fn analyze(reg: &Registry, paths: &[String], opt: Options) -> Result<String,
     let mut all_required_prefixes: HashSet<String> = HashSet::new();
 
     for path in paths {
-        let Ok(content) = ops::read_source(path, false) else { continue };
-        let Ok(plugin) = ops::resolve_plugin(reg, path, None) else { continue };
-        let Ok(forms) = plugin.top_level_forms(&content) else { continue };
+        let Ok(content) = ops::read_source(path, false) else {
+            continue;
+        };
+        let Ok(plugin) = ops::resolve_plugin(reg, path, None) else {
+            continue;
+        };
+        let Ok(forms) = plugin.top_level_forms(&content) else {
+            continue;
+        };
 
         let exports = scan_exports(&content, plugin.id());
         let prefixes = scan_required_prefixes(&content, plugin.id());
@@ -325,16 +402,26 @@ pub fn analyze(reg: &Registry, paths: &[String], opt: Options) -> Result<String,
     if opt.unused {
         for (name, records) in &defs {
             let candidate = records.iter().any(|r| r.arity.is_some() || r.is_macro);
-            if !candidate { continue; }
+            if !candidate {
+                continue;
+            }
             // Public API is intentionally unreferenced within the project.
-            if records.iter().any(|r| r.is_public) { continue; }
-            let total_refs: usize = files.iter().map(|(_, c, p)| p.find_symbol_refs(c, name).len()).sum();
+            if records.iter().any(|r| r.is_public) {
+                continue;
+            }
+            let total_refs: usize = files
+                .iter()
+                .map(|(_, c, p)| p.find_symbol_refs(c, name).len())
+                .sum();
             if total_refs == 0 {
                 for r in records {
                     findings.push((
                         r.path.clone(),
                         r.pos,
-                        format!("unused: {} `{}` has no references in the analyzed files", r.head, name),
+                        format!(
+                            "unused: {} `{}` has no references in the analyzed files",
+                            r.head, name
+                        ),
                     ));
                 }
             }
@@ -356,7 +443,12 @@ pub fn analyze(reg: &Registry, paths: &[String], opt: Options) -> Result<String,
                                     findings.push((
                                         path.clone(),
                                         call.pos,
-                                        format!("arity: `{}` called with {} arg(s), expects {}", call.name, call.argc, a.describe()),
+                                        format!(
+                                            "arity: `{}` called with {} arg(s), expects {}",
+                                            call.name,
+                                            call.argc,
+                                            a.describe()
+                                        ),
                                     ));
                                 }
                             }
@@ -382,15 +474,25 @@ pub fn analyze(reg: &Registry, paths: &[String], opt: Options) -> Result<String,
     Ok(render(&files, &mut findings))
 }
 
-fn render(files: &[(String, String, &dyn LanguagePlugin)], findings: &mut [(String, usize, String)]) -> String {
+fn render(
+    files: &[(String, String, &dyn LanguagePlugin)],
+    findings: &mut [(String, usize, String)],
+) -> String {
     if findings.is_empty() {
         return "No issues found\n".to_string();
     }
-    let content_of = |path: &str| files.iter().find(|(p, _, _)| p == path).map(|(_, c, _)| c.as_str());
+    let content_of = |path: &str| {
+        files
+            .iter()
+            .find(|(p, _, _)| p == path)
+            .map(|(_, c, _)| c.as_str())
+    };
     findings.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut out = String::new();
     for (path, pos, msg) in findings.iter() {
-        let (line, col) = content_of(path).map(|c| lisp_sitter_core::line_column(c, *pos)).unwrap_or((0, 0));
+        let (line, col) = content_of(path)
+            .map(|c| lisp_sitter_core::line_column(c, *pos))
+            .unwrap_or((0, 0));
         out.push_str(&format!("{path}:{line}:{col}: {msg}\n"));
     }
     out.push_str(&format!("\n{} issue(s) found\n", findings.len()));
@@ -403,10 +505,18 @@ fn is_macro_head(head: &str) -> bool {
 
 /// Compute the arity of a function definition, or `None` when the form is not a
 /// non-macro function definition we can reason about.
-fn function_arity(plugin: &dyn LanguagePlugin, head: &str, lang: &str, form_text: &str) -> Option<Arity> {
+fn function_arity(
+    plugin: &dyn LanguagePlugin,
+    head: &str,
+    lang: &str,
+    form_text: &str,
+) -> Option<Arity> {
     let is_function = match lang {
         "scheme" => head == "define" && is_curried_define(form_text),
-        _ => matches!(head, "defun" | "defsubst" | "cl-defun" | "defmethod" | "defgeneric"),
+        _ => matches!(
+            head,
+            "defun" | "defsubst" | "cl-defun" | "defmethod" | "defgeneric"
+        ),
     };
     if !is_function {
         return None;
@@ -425,9 +535,15 @@ fn arity_from_params(params: &[String], lang: &str) -> Arity {
     if lang == "scheme" {
         // `(a b . rest)` → variadic after the dot; otherwise fixed.
         if let Some(dot) = params.iter().position(|p| p == ".") {
-            return Arity { min: dot, max: None };
+            return Arity {
+                min: dot,
+                max: None,
+            };
         }
-        return Arity { min: params.len(), max: Some(params.len()) };
+        return Arity {
+            min: params.len(),
+            max: Some(params.len()),
+        };
     }
     // elisp / commonlisp lambda lists
     let mut min = 0usize;
@@ -436,7 +552,8 @@ fn arity_from_params(params: &[String], lang: &str) -> Arity {
     for p in params {
         match p.as_str() {
             "&optional" => optional = true,
-            "&rest" | "&body" | "&key" | "&allow-other-keys" | "&aux" | "&environment" | "&whole" => {
+            "&rest" | "&body" | "&key" | "&allow-other-keys" | "&aux" | "&environment"
+            | "&whole" => {
                 return Arity { min, max: None };
             }
             _ => {
@@ -449,7 +566,10 @@ fn arity_from_params(params: &[String], lang: &str) -> Arity {
             }
         }
     }
-    Arity { min, max: Some(max) }
+    Arity {
+        min,
+        max: Some(max),
+    }
 }
 
 #[cfg(test)]
@@ -458,7 +578,11 @@ mod tests {
     use crate::default_registry;
 
     fn test_dir(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("lisp-sitter-analyze-{}-{}", std::process::id(), name));
+        let d = std::env::temp_dir().join(format!(
+            "lisp-sitter-analyze-{}-{}",
+            std::process::id(),
+            name
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -500,7 +624,11 @@ mod tests {
     fn detects_unused_function() {
         let reg = default_registry();
         let dir = test_dir("unused");
-        let p = write(&dir, "a.el", "(defun used () 1)\n(defun lonely () 2)\n(defun caller () (used))\n");
+        let p = write(
+            &dir,
+            "a.el",
+            "(defun used () 1)\n(defun lonely () 2)\n(defun caller () (used))\n",
+        );
         let report = analyze(&reg, &[p], Options::all()).unwrap();
         assert!(report.contains("unused"), "{report}");
         assert!(report.contains("lonely"), "{report}");
@@ -512,8 +640,21 @@ mod tests {
     fn detects_arity_mismatch() {
         let reg = default_registry();
         let dir = test_dir("arity");
-        let p = write(&dir, "a.el", "(defun add (a b) (+ a b))\n(defun go () (add 1))\n");
-        let report = analyze(&reg, &[p], Options { unused: false, unresolved: false, arity: true }).unwrap();
+        let p = write(
+            &dir,
+            "a.el",
+            "(defun add (a b) (+ a b))\n(defun go () (add 1))\n",
+        );
+        let report = analyze(
+            &reg,
+            &[p],
+            Options {
+                unused: false,
+                unresolved: false,
+                arity: true,
+            },
+        )
+        .unwrap();
         assert!(report.contains("arity"), "{report}");
         assert!(report.contains("`add`"), "{report}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -524,7 +665,16 @@ mod tests {
         let reg = default_registry();
         let dir = test_dir("unresolved");
         let p = write(&dir, "a.el", "(defun go () (frobnicate 1 2))\n");
-        let report = analyze(&reg, &[p], Options { unused: false, unresolved: true, arity: false }).unwrap();
+        let report = analyze(
+            &reg,
+            &[p],
+            Options {
+                unused: false,
+                unresolved: true,
+                arity: false,
+            },
+        )
+        .unwrap();
         assert!(report.contains("unresolved"), "{report}");
         assert!(report.contains("frobnicate"), "{report}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -535,7 +685,16 @@ mod tests {
         let reg = default_registry();
         let dir = test_dir("builtins");
         let p = write(&dir, "a.el", "(defun go () (message \"%s\" (+ 1 2)))\n");
-        let report = analyze(&reg, &[p], Options { unused: false, unresolved: true, arity: false }).unwrap();
+        let report = analyze(
+            &reg,
+            &[p],
+            Options {
+                unused: false,
+                unresolved: true,
+                arity: false,
+            },
+        )
+        .unwrap();
         assert!(report.contains("No issues"), "{report}");
         let _ = std::fs::remove_dir_all(&dir);
     }

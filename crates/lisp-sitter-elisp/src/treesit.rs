@@ -12,11 +12,28 @@ pub const DIALECT: Dialect = Dialect::Elisp;
 /// user-configured `extra_definers` are appended).
 pub fn base_definers() -> Vec<Definer> {
     [
-        "defun", "defsubst", "defmacro", "cl-defun", "cl-defmacro", "cl-defsubst",
-        "cl-defmethod", "cl-defgeneric", "cl-defstruct", "defvar", "defvar-local",
-        "defconst", "defcustom", "defface", "defgroup", "define-minor-mode",
-        "define-derived-mode", "define-globalized-minor-mode", "define-error",
-        "defalias", "ert-deftest", "define-advice",
+        "defun",
+        "defsubst",
+        "defmacro",
+        "cl-defun",
+        "cl-defmacro",
+        "cl-defsubst",
+        "cl-defmethod",
+        "cl-defgeneric",
+        "cl-defstruct",
+        "defvar",
+        "defvar-local",
+        "defconst",
+        "defcustom",
+        "defface",
+        "defgroup",
+        "define-minor-mode",
+        "define-derived-mode",
+        "define-globalized-minor-mode",
+        "define-error",
+        "defalias",
+        "ert-deftest",
+        "define-advice",
     ]
     .into_iter()
     .map(Definer::second)

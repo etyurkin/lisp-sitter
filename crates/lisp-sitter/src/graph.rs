@@ -57,14 +57,24 @@ impl ProjectGraph {
         let mut edges = Vec::new();
 
         for path in paths {
-            let Ok(content) = ops::read_source(path, false) else { continue };
+            let Ok(content) = ops::read_source(path, false) else {
+                continue;
+            };
             let canon = canonical_path(path);
-            let Ok(plugin) = ops::resolve_plugin(reg, &canon, None) else { continue };
-            let Ok(file_forms) = plugin.top_level_forms(&content) else { continue };
+            let Ok(plugin) = ops::resolve_plugin(reg, &canon, None) else {
+                continue;
+            };
+            let Ok(file_forms) = plugin.top_level_forms(&content) else {
+                continue;
+            };
 
             let file_idx = files.len();
             let dialect = ops::dialect_for_id(plugin.id());
-            files.push(IndexedFile { path: canon, content, dialect });
+            files.push(IndexedFile {
+                path: canon,
+                content,
+                dialect,
+            });
 
             for f in file_forms {
                 let idx = forms.len();
@@ -93,7 +103,12 @@ impl ProjectGraph {
             }
         }
 
-        Ok(Self { files, forms, defs_by_name, edges })
+        Ok(Self {
+            files,
+            forms,
+            defs_by_name,
+            edges,
+        })
     }
 
     fn form(&self, idx: usize) -> &FormSite {
@@ -151,10 +166,7 @@ impl ProjectGraph {
                 if seen.insert(edge.callee.clone()) {
                     let file = self.file(self.form(form_idx).file_idx);
                     let (line, col) = line_column(&file.content, edge.call_pos);
-                    out.push(format!(
-                        "{}:{}:{}: `{}`",
-                        file.path, line, col, edge.callee
-                    ));
+                    out.push(format!("{}:{}:{}: `{}`", file.path, line, col, edge.callee));
                 }
             }
         }
@@ -375,8 +387,7 @@ pub fn diff(
     depth: usize,
     with_impact: bool,
 ) -> Result<String, Error> {
-    let root = std::fs::canonicalize(project_root(path))
-        .unwrap_or_else(|_| project_root(path));
+    let root = std::fs::canonicalize(project_root(path)).unwrap_or_else(|_| project_root(path));
     let paths = ops::expand_paths(path);
     let path_set: HashSet<String> = paths.iter().map(|p| canonical_path(p)).collect();
     let graph = ProjectGraph::build(reg, &paths)?;
@@ -504,11 +515,8 @@ mod tests {
     use crate::default_registry;
 
     fn test_dir(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "lisp-sitter-graph-{}-{}",
-            std::process::id(),
-            name
-        ));
+        let d =
+            std::env::temp_dir().join(format!("lisp-sitter-graph-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -547,7 +555,11 @@ mod tests {
     fn callees_from_definition() {
         let reg = default_registry();
         let dir = test_dir("callees");
-        write(&dir, "a.el", "(defun main () (helper (foo)))\n(defun helper (x) x)\n");
+        write(
+            &dir,
+            "a.el",
+            "(defun main () (helper (foo)))\n(defun helper (x) x)\n",
+        );
         let out = callees(&reg, dir.to_str().unwrap(), "main").unwrap();
         assert!(out.contains("`helper`"), "{out}");
         assert!(out.contains("`foo`"), "{out}");
@@ -572,7 +584,11 @@ mod tests {
     fn impact_transitive_callers() {
         let reg = default_registry();
         let dir = test_dir("impact");
-        write(&dir, "a.el", "(defun top () (mid))\n(defun mid () (leaf))\n(defun leaf () 1)\n");
+        write(
+            &dir,
+            "a.el",
+            "(defun top () (mid))\n(defun mid () (leaf))\n(defun leaf () 1)\n",
+        );
         let out = impact(&reg, dir.to_str().unwrap(), "leaf", 3).unwrap();
         assert!(out.contains("depth 1"), "{out}");
         assert!(out.contains("mid"), "{out}");

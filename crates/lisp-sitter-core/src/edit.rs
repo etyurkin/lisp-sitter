@@ -121,22 +121,34 @@ pub fn find_callers_in(content: &str, sym: &str, dialect: Dialect) -> Vec<usize>
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'"' => { i = skip_string(b, i).unwrap_or(b.len()); }
-            b';' => { i = skip_line_comment(b, i).unwrap_or(b.len()); }
-            b'#' => { i = skip_sexp_in(b, i, dialect).unwrap_or(i + 1); }
-            b'?' if dialect == Dialect::Elisp => { i = skip_sexp_in(b, i, dialect).unwrap_or(i + 1); }
+            b'"' => {
+                i = skip_string(b, i).unwrap_or(b.len());
+            }
+            b';' => {
+                i = skip_line_comment(b, i).unwrap_or(b.len());
+            }
+            b'#' => {
+                i = skip_sexp_in(b, i, dialect).unwrap_or(i + 1);
+            }
+            b'?' if dialect == Dialect::Elisp => {
+                i = skip_sexp_in(b, i, dialect).unwrap_or(i + 1);
+            }
             b'(' => {
                 let call_pos = i;
                 i += 1;
                 let mut ws = i;
-                while ws < b.len() && matches!(b[ws], b' ' | b'\t' | b'\n' | b'\r') { ws += 1; }
+                while ws < b.len() && matches!(b[ws], b' ' | b'\t' | b'\n' | b'\r') {
+                    ws += 1;
+                }
                 if let Ok(sym_end) = skip_atom_in(b, ws, dialect) {
                     if sym_end > ws && &content[ws..sym_end] == sym {
                         positions.push(call_pos);
                     }
                 }
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
     positions
@@ -164,7 +176,11 @@ mod tests {
     fn find_callers_zero_arg_before_arg_call() {
         let src = "(bar (bar x))";
         let hits = find_callers_in(src, "bar", Dialect::Generic);
-        assert_eq!(hits.len(), 2, "both (bar) and (bar x) must be found: {hits:?}");
+        assert_eq!(
+            hits.len(),
+            2,
+            "both (bar) and (bar x) must be found: {hits:?}"
+        );
         assert!(hits[0] < hits[1], "outer call must come first");
     }
 

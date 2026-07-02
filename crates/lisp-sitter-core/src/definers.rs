@@ -31,11 +31,17 @@ pub struct Definer {
 impl Definer {
     /// A definer whose name is the second element (the common case).
     pub fn second(keyword: impl Into<String>) -> Self {
-        Self { keyword: keyword.into(), name: NameStrategy::Second }
+        Self {
+            keyword: keyword.into(),
+            name: NameStrategy::Second,
+        }
     }
 
     pub fn new(keyword: impl Into<String>, name: NameStrategy) -> Self {
-        Self { keyword: keyword.into(), name }
+        Self {
+            keyword: keyword.into(),
+            name,
+        }
     }
 }
 
@@ -208,32 +214,59 @@ mod tests {
     fn extend_keywords_adds_custom() {
         let mut s = set();
         s.extend_keywords(&["define-widget".to_string(), "defun".to_string()]);
-        assert_eq!(s.classify("(define-widget my-w ...)"), Some(("define-widget".into(), "my-w".into())));
+        assert_eq!(
+            s.classify("(define-widget my-w ...)"),
+            Some(("define-widget".into(), "my-w".into()))
+        );
         assert!(s.contains("define-widget"));
     }
 
     #[test]
     fn simple_second() {
-        assert_eq!(set().classify("(defun foo (x) x)"), Some(("defun".into(), "foo".into())));
-        assert_eq!(set().classify("(defvar bar 1)"), Some(("defvar".into(), "bar".into())));
+        assert_eq!(
+            set().classify("(defun foo (x) x)"),
+            Some(("defun".into(), "foo".into()))
+        );
+        assert_eq!(
+            set().classify("(defvar bar 1)"),
+            Some(("defvar".into(), "bar".into()))
+        );
     }
 
     #[test]
     fn curried_define() {
-        assert_eq!(set().classify("(define (bar x) (+ x 1))"), Some(("define".into(), "bar".into())));
-        assert_eq!(set().classify("(define ((curry x) y) y)"), Some(("define".into(), "curry".into())));
+        assert_eq!(
+            set().classify("(define (bar x) (+ x 1))"),
+            Some(("define".into(), "bar".into()))
+        );
+        assert_eq!(
+            set().classify("(define ((curry x) y) y)"),
+            Some(("define".into(), "curry".into()))
+        );
     }
 
     #[test]
     fn sigils_stripped() {
-        assert_eq!(set().classify("(defalias 'a 'b)"), Some(("defalias".into(), "a".into())));
-        assert_eq!(set().classify("(defpackage :my-pkg)"), Some(("defpackage".into(), "my-pkg".into())));
-        assert_eq!(set().classify("(defpackage \"FOO\" (:use :cl))"), Some(("defpackage".into(), "FOO".into())));
+        assert_eq!(
+            set().classify("(defalias 'a 'b)"),
+            Some(("defalias".into(), "a".into()))
+        );
+        assert_eq!(
+            set().classify("(defpackage :my-pkg)"),
+            Some(("defpackage".into(), "my-pkg".into()))
+        );
+        assert_eq!(
+            set().classify("(defpackage \"FOO\" (:use :cl))"),
+            Some(("defpackage".into(), "FOO".into()))
+        );
     }
 
     #[test]
     fn library_list() {
-        assert_eq!(set().classify("(define-library (my lib) (export x))"), Some(("define-library".into(), "my lib".into())));
+        assert_eq!(
+            set().classify("(define-library (my lib) (export x))"),
+            Some(("define-library".into(), "my lib".into()))
+        );
     }
 
     #[test]

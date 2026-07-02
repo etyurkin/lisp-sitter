@@ -29,7 +29,8 @@ fn dump(node: Node, src: &str, depth: usize) {
 fn explore_scheme_library() {
     let code = "(define-library (my lib)\n  (export foo)\n  (import (scheme base)))\n";
     let mut p = Parser::new();
-    p.set_language(&tree_sitter_scheme::LANGUAGE.into()).unwrap();
+    p.set_language(&tree_sitter_scheme::LANGUAGE.into())
+        .unwrap();
     let tree = p.parse(code, None).unwrap();
     dump(tree.root_node(), code, 0);
 }

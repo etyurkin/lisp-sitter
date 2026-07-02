@@ -50,7 +50,8 @@ fn dirs_home() -> Result<PathBuf> {
 
 fn merge_mcp_file(path: &Path, name: &str, entry: &Value) -> Result<()> {
     let mut root: Value = if path.exists() {
-        let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         serde_json::from_str(&text).unwrap_or_else(|_| json!({}))
     } else {
         json!({})
@@ -87,7 +88,11 @@ mod tests {
     }
 
     fn test_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("lisp-sitter-install-test-{}-{}", std::process::id(), name));
+        let d = std::env::temp_dir().join(format!(
+            "lisp-sitter-install-test-{}-{}",
+            std::process::id(),
+            name
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -96,9 +101,15 @@ mod tests {
     #[test]
     fn test_config_paths() {
         let home = dirs_home().unwrap();
-        assert_eq!(cursor_config_path().unwrap(), home.join(".cursor").join("mcp.json"));
+        assert_eq!(
+            cursor_config_path().unwrap(),
+            home.join(".cursor").join("mcp.json")
+        );
         assert_eq!(claude_code_path().unwrap(), home.join(".claude.json"));
-        assert_eq!(claude_desktop_path().unwrap(), home.join(".claude").join("settings.json"));
+        assert_eq!(
+            claude_desktop_path().unwrap(),
+            home.join(".claude").join("settings.json")
+        );
     }
 
     #[test]
@@ -110,7 +121,8 @@ mod tests {
         merge_mcp_file(&path, "my-server", &entry).unwrap();
         assert!(path.exists());
 
-        let content: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let content: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(content["mcpServers"]["my-server"]["command"], "/bin/test");
         assert_eq!(content["mcpServers"]["my-server"]["type"], "stdio");
 
@@ -127,9 +139,16 @@ mod tests {
         let entry = json!({"command": "/new", "args": []});
         merge_mcp_file(&path, "new-server", &entry).unwrap();
 
-        let content: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(content["mcpServers"].as_object().unwrap().contains_key("existing"));
-        assert!(content["mcpServers"].as_object().unwrap().contains_key("new-server"));
+        let content: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(content["mcpServers"]
+            .as_object()
+            .unwrap()
+            .contains_key("existing"));
+        assert!(content["mcpServers"]
+            .as_object()
+            .unwrap()
+            .contains_key("new-server"));
         assert_eq!(content["mcpServers"]["new-server"]["command"], "/new");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -140,12 +159,17 @@ mod tests {
         let dir = test_dir("overwrites");
         let path = dir.join("test-config.json");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&path, r#"{"mcpServers":{"srv":{"command":"/old","args":[]}}}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"srv":{"command":"/old","args":[]}}}"#,
+        )
+        .unwrap();
 
         let entry = json!({"command": "/new", "args": ["serve"], "type": "stdio"});
         merge_mcp_file(&path, "srv", &entry).unwrap();
 
-        let content: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let content: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(content["mcpServers"]["srv"]["command"], "/new");
         assert_eq!(content["mcpServers"]["srv"]["type"], "stdio");
 
@@ -169,7 +193,10 @@ mod tests {
     #[test]
     fn test_install_config_writes_files() {
         let _guard = env_serial().lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("lisp-sitter-install-test-config-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "lisp-sitter-install-test-config-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("LISP_SITTER_HOME", dir.to_str().unwrap());
@@ -177,11 +204,14 @@ mod tests {
         assert!(dir.join(".cursor").join("mcp.json").exists());
         assert!(dir.join(".claude.json").exists());
         assert!(dir.join(".claude").join("settings.json").exists());
-        let content: Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join(".claude.json")).unwrap()
-        ).unwrap();
+        let content: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join(".claude.json")).unwrap())
+                .unwrap();
         assert_eq!(content["mcpServers"]["lisp-sitter"]["type"], "stdio");
-        assert!(content["mcpServers"]["lisp-sitter"]["command"].as_str().unwrap().contains("lisp-sitter"));
+        assert!(content["mcpServers"]["lisp-sitter"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("lisp-sitter"));
         std::env::remove_var("LISP_SITTER_HOME");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -189,7 +219,10 @@ mod tests {
     #[test]
     fn test_install_config_default_cursor() {
         let _guard = env_serial().lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("lisp-sitter-install-test-default-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "lisp-sitter-install-test-default-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("LISP_SITTER_HOME", dir.to_str().unwrap());

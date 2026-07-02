@@ -297,12 +297,10 @@ pub fn complete_form_in(input: &str, dialect: Dialect) -> Option<String> {
                     Err(_) => i += 1,
                 }
             }
-            b'?' if dialect == Dialect::Elisp => {
-                match skip_atom_in(bytes, i, dialect) {
-                    Ok(next) => i = next,
-                    Err(_) => i += 1,
-                }
-            }
+            b'?' if dialect == Dialect::Elisp => match skip_atom_in(bytes, i, dialect) {
+                Ok(next) => i = next,
+                Err(_) => i += 1,
+            },
             b'\'' | b'`' => i += 1,
             b',' => {
                 if i + 1 < bytes.len() && bytes[i + 1] == b'@' {
@@ -472,7 +470,10 @@ mod tests {
 
     #[test]
     fn complete_balanced() {
-        assert_eq!(complete_form("(defun x () 1)").as_deref(), Some("(defun x () 1)"));
+        assert_eq!(
+            complete_form("(defun x () 1)").as_deref(),
+            Some("(defun x () 1)")
+        );
     }
 
     #[test]
@@ -538,10 +539,7 @@ mod tests {
 
     #[test]
     fn complete_vector() {
-        assert_eq!(
-            complete_form("#(foo bar").as_deref(),
-            Some("#(foo bar)")
-        );
+        assert_eq!(complete_form("#(foo bar").as_deref(), Some("#(foo bar)"));
     }
 
     #[test]

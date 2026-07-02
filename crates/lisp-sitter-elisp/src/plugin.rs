@@ -10,7 +10,9 @@ pub struct ElispPlugin {
 impl ElispPlugin {
     /// Plugin with the built-in Emacs Lisp definer set.
     pub fn new() -> Self {
-        Self { definers: DefinerSet::new(base_definers()) }
+        Self {
+            definers: DefinerSet::new(base_definers()),
+        }
     }
 
     /// Plugin whose definer set also recognizes the given extra keywords
@@ -66,9 +68,11 @@ impl LanguagePlugin for ElispPlugin {
         let Some(tree) = crate::treesit::parse(content) else {
             return Ok(String::new());
         };
-        Ok(
-            lisp_sitter_core::treesit_util::recursive_outline(content, tree.root_node(), depth),
-        )
+        Ok(lisp_sitter_core::treesit_util::recursive_outline(
+            content,
+            tree.root_node(),
+            depth,
+        ))
     }
 
     fn node_bounds(&self, content: &str, symbol: &str) -> Result<(usize, usize)> {
@@ -83,7 +87,9 @@ impl LanguagePlugin for ElispPlugin {
 
         // ── check: missing docstrings ───────────────────────────
         for f in &forms {
-            let Some(_name) = f.name.as_deref() else { continue };
+            let Some(_name) = f.name.as_deref() else {
+                continue;
+            };
             let text = &content[f.start..f.end];
             let is_def = matches!(
                 f.label.split(':').next().unwrap_or(""),
@@ -111,7 +117,16 @@ impl LanguagePlugin for ElispPlugin {
         let has_provide = content.contains("(provide ");
         let defines_something = forms.iter().any(|f| {
             let label = f.label.split(':').next().unwrap_or("");
-            matches!(label, "defun" | "defsubst" | "defmacro" | "cl-defun" | "defvar" | "defconst" | "defcustom")
+            matches!(
+                label,
+                "defun"
+                    | "defsubst"
+                    | "defmacro"
+                    | "cl-defun"
+                    | "defvar"
+                    | "defconst"
+                    | "defcustom"
+            )
         });
         if defines_something && !has_provide {
             warnings.push(format!(
@@ -131,13 +146,18 @@ impl LanguagePlugin for ElispPlugin {
     fn form_params_and_body(&self, form_text: &str) -> Option<(Vec<String>, String)> {
         let tree = crate::treesit::parse(form_text)?;
         let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        Some((info.param_names, form_text[info.body_start..info.body_end].to_string()))
+        Some((
+            info.param_names,
+            form_text[info.body_start..info.body_end].to_string(),
+        ))
     }
 
     fn form_rename_name(&self, form_text: &str, old: &str, new: &str) -> Option<String> {
         let tree = crate::treesit::parse(form_text)?;
         let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        if &form_text[info.name_start..info.name_end] != old { return None; }
+        if &form_text[info.name_start..info.name_end] != old {
+            return None;
+        }
         let mut result = form_text.to_string();
         result.replace_range(info.name_start..info.name_end, new);
         Some(result)
@@ -145,12 +165,26 @@ impl LanguagePlugin for ElispPlugin {
 
     fn find_sexp_in(&self, content: &str, pattern: &str) -> Option<Option<(usize, usize)>> {
         let tree = crate::treesit::parse(content)?;
-        Some(lisp_sitter_core::treesit_util::find_sexp_in_tree(content, pattern, tree.root_node()))
+        Some(lisp_sitter_core::treesit_util::find_sexp_in_tree(
+            content,
+            pattern,
+            tree.root_node(),
+        ))
     }
 
-    fn find_symbol_refs(&self, content: &str, symbol: &str) -> Vec<lisp_sitter_core::plugin::SymbolRef> {
+    fn find_symbol_refs(
+        &self,
+        content: &str,
+        symbol: &str,
+    ) -> Vec<lisp_sitter_core::plugin::SymbolRef> {
         crate::treesit::parse(content)
-            .map(|tree| lisp_sitter_core::treesit_util::find_symbol_refs_in_tree(content, tree.root_node(), symbol))
+            .map(|tree| {
+                lisp_sitter_core::treesit_util::find_symbol_refs_in_tree(
+                    content,
+                    tree.root_node(),
+                    symbol,
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -163,7 +197,7 @@ impl LanguagePlugin for ElispPlugin {
     fn is_known_global(&self, name: &str) -> bool {
         is_elisp_global(name)
     }
-}  // impl LanguagePlugin for ElispPlugin
+} // impl LanguagePlugin for ElispPlugin
 
 /// Curated (non-exhaustive) set of Emacs Lisp special forms and common
 /// built-ins, used by project analysis to suppress unresolved-call warnings.
@@ -174,34 +208,188 @@ fn is_elisp_global(name: &str) -> bool {
     let set = SET.get_or_init(|| {
         [
             // special forms / core macros
-            "if", "when", "unless", "cond", "and", "or", "not", "while", "dolist", "dotimes",
-            "let", "let*", "letrec", "lambda", "function", "quote", "progn", "prog1", "prog2",
-            "setq", "setq-default", "set", "setf", "push", "pop", "incf", "decf", "cl-incf", "cl-decf",
-            "save-excursion", "save-restriction", "save-match-data", "with-current-buffer",
-            "condition-case", "unwind-protect", "catch", "throw", "ignore-errors", "ignore",
-            "interactive", "declare", "defvar", "defconst", "defcustom", "defun", "defmacro",
-            "defsubst", "cl-defun", "require", "provide", "eval-when-compile", "eval-and-compile",
-            "with-eval-after-load", "pcase", "pcase-let", "cl-case", "cl-loop", "cl-letf", "cl-flet",
-            "apply", "funcall", "mapcar", "mapc", "mapcan", "mapconcat", "cl-remove-if", "cl-remove-if-not",
-            "seq-map", "seq-filter", "seq-reduce", "seq-find", "seq-do",
+            "if",
+            "when",
+            "unless",
+            "cond",
+            "and",
+            "or",
+            "not",
+            "while",
+            "dolist",
+            "dotimes",
+            "let",
+            "let*",
+            "letrec",
+            "lambda",
+            "function",
+            "quote",
+            "progn",
+            "prog1",
+            "prog2",
+            "setq",
+            "setq-default",
+            "set",
+            "setf",
+            "push",
+            "pop",
+            "incf",
+            "decf",
+            "cl-incf",
+            "cl-decf",
+            "save-excursion",
+            "save-restriction",
+            "save-match-data",
+            "with-current-buffer",
+            "condition-case",
+            "unwind-protect",
+            "catch",
+            "throw",
+            "ignore-errors",
+            "ignore",
+            "interactive",
+            "declare",
+            "defvar",
+            "defconst",
+            "defcustom",
+            "defun",
+            "defmacro",
+            "defsubst",
+            "cl-defun",
+            "require",
+            "provide",
+            "eval-when-compile",
+            "eval-and-compile",
+            "with-eval-after-load",
+            "pcase",
+            "pcase-let",
+            "cl-case",
+            "cl-loop",
+            "cl-letf",
+            "cl-flet",
+            "apply",
+            "funcall",
+            "mapcar",
+            "mapc",
+            "mapcan",
+            "mapconcat",
+            "cl-remove-if",
+            "cl-remove-if-not",
+            "seq-map",
+            "seq-filter",
+            "seq-reduce",
+            "seq-find",
+            "seq-do",
             // list / sequence builtins
-            "car", "cdr", "caar", "cadr", "cddr", "cons", "list", "append", "nth", "nthcdr",
-            "length", "reverse", "nreverse", "member", "memq", "assoc", "assq", "delete", "delq",
-            "elt", "aref", "aset", "vconcat", "vector", "make-list", "make-vector", "last", "butlast",
+            "car",
+            "cdr",
+            "caar",
+            "cadr",
+            "cddr",
+            "cons",
+            "list",
+            "append",
+            "nth",
+            "nthcdr",
+            "length",
+            "reverse",
+            "nreverse",
+            "member",
+            "memq",
+            "assoc",
+            "assq",
+            "delete",
+            "delq",
+            "elt",
+            "aref",
+            "aset",
+            "vconcat",
+            "vector",
+            "make-list",
+            "make-vector",
+            "last",
+            "butlast",
             // predicates / equality
-            "eq", "eql", "equal", "null", "atom", "consp", "listp", "stringp", "numberp", "integerp",
-            "symbolp", "functionp", "boundp", "fboundp", "zerop", "plusp", "minusp",
+            "eq",
+            "eql",
+            "equal",
+            "null",
+            "atom",
+            "consp",
+            "listp",
+            "stringp",
+            "numberp",
+            "integerp",
+            "symbolp",
+            "functionp",
+            "boundp",
+            "fboundp",
+            "zerop",
+            "plusp",
+            "minusp",
             // arithmetic / strings
-            "+", "-", "*", "/", "%", "mod", "1+", "1-", "max", "min", "abs", "expt", "floor", "ceiling",
-            "=", "/=", "<", ">", "<=", ">=", "concat", "format", "format-message", "string", "substring",
-            "string=", "string<", "string-equal", "string-match", "string-prefix-p", "string-suffix-p",
-            "split-string", "string-join", "string-trim", "number-to-string", "string-to-number",
-            "symbol-name", "symbol-value", "intern", "make-symbol", "gensym",
+            "+",
+            "-",
+            "*",
+            "/",
+            "%",
+            "mod",
+            "1+",
+            "1-",
+            "max",
+            "min",
+            "abs",
+            "expt",
+            "floor",
+            "ceiling",
+            "=",
+            "/=",
+            "<",
+            ">",
+            "<=",
+            ">=",
+            "concat",
+            "format",
+            "format-message",
+            "string",
+            "substring",
+            "string=",
+            "string<",
+            "string-equal",
+            "string-match",
+            "string-prefix-p",
+            "string-suffix-p",
+            "split-string",
+            "string-join",
+            "string-trim",
+            "number-to-string",
+            "string-to-number",
+            "symbol-name",
+            "symbol-value",
+            "intern",
+            "make-symbol",
+            "gensym",
             // io / messaging
-            "message", "error", "user-error", "princ", "print", "prin1", "insert", "point", "goto-char",
+            "message",
+            "error",
+            "user-error",
+            "princ",
+            "print",
+            "prin1",
+            "insert",
+            "point",
+            "goto-char",
             // hash tables / alist
-            "make-hash-table", "gethash", "puthash", "remhash", "maphash", "hash-table-count",
-            "add-to-list", "alist-get", "plist-get", "plist-put",
+            "make-hash-table",
+            "gethash",
+            "puthash",
+            "remhash",
+            "maphash",
+            "hash-table-count",
+            "add-to-list",
+            "alist-get",
+            "plist-get",
+            "plist-put",
         ]
         .into_iter()
         .collect()
@@ -216,9 +404,11 @@ fn validate_content(content: &str) -> Result<()> {
         return Err(Error::Syntax(err));
     }
     if has_parse_errors(content) {
-        return Err(Error::Syntax(
-            lisp_sitter_core::position::error_at(content, 0, "tree-sitter parse error"),
-        ));
+        return Err(Error::Syntax(lisp_sitter_core::position::error_at(
+            content,
+            0,
+            "tree-sitter parse error",
+        )));
     }
     Ok(())
 }

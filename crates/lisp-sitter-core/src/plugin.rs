@@ -44,35 +44,57 @@ pub trait LanguagePlugin: Send + Sync {
     fn outline(&self, content: &str) -> crate::Result<String>;
     fn list_forms(&self, content: &str) -> crate::Result<Vec<FormInfo>>;
     fn tree_depth(&self, content: &str, depth: usize) -> crate::Result<String> {
-        if depth <= 1 { self.outline(content) } else { Err(crate::Error::NotImplemented("tree_depth".into())) }
+        if depth <= 1 {
+            self.outline(content)
+        } else {
+            Err(crate::Error::NotImplemented("tree_depth".into()))
+        }
     }
     fn node_bounds(&self, content: &str, symbol: &str) -> crate::Result<(usize, usize)>;
-    fn semantic_check(&self, content: &str) -> Vec<String> { let _ = content; Vec::new() }
+    fn semantic_check(&self, content: &str) -> Vec<String> {
+        let _ = content;
+        Vec::new()
+    }
 
     /// Whether `name` is a known special form, macro, or built-in function of
     /// this dialect — i.e. a symbol that resolves globally without a project
     /// definition. Used by project analysis to suppress unresolved-call
     /// warnings. The default returns `false`; each plugin overrides it with a
     /// curated (non-exhaustive) set.
-    fn is_known_global(&self, name: &str) -> bool { let _ = name; false }
+    fn is_known_global(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
 
     /// Return descriptions of MISSING tokens and ERROR nodes found by the
     /// tree-sitter parser.  Empty when the file is structurally clean or when
     /// tree-sitter is unavailable for this language.
-    fn find_errors(&self, content: &str) -> Vec<String> { let _ = content; Vec::new() }
+    fn find_errors(&self, content: &str) -> Vec<String> {
+        let _ = content;
+        Vec::new()
+    }
 
     /// Return `(body_start, body_end)` within `form_text` — the byte range of
     /// the actual executable body after the head, name, qualifiers, parameter
     /// list, and any docstring / `declare` preamble.
-    fn form_body_range(&self, form_text: &str) -> Option<(usize, usize)> { let _ = form_text; None }
+    fn form_body_range(&self, form_text: &str) -> Option<(usize, usize)> {
+        let _ = form_text;
+        None
+    }
 
     /// Extract parameter names and body text from a function definition form.
     /// Returns `None` when the form is not a flattenable function definition.
-    fn form_params_and_body(&self, form_text: &str) -> Option<(Vec<String>, String)> { let _ = form_text; None }
+    fn form_params_and_body(&self, form_text: &str) -> Option<(Vec<String>, String)> {
+        let _ = form_text;
+        None
+    }
 
     /// Rename the function-name token inside `form_text` from `old` to `new`.
     /// Returns the modified form text, or `None` when tree-sitter is unavailable.
-    fn form_rename_name(&self, form_text: &str, old: &str, new: &str) -> Option<String> { let _ = (form_text, old, new); None }
+    fn form_rename_name(&self, form_text: &str, old: &str, new: &str) -> Option<String> {
+        let _ = (form_text, old, new);
+        None
+    }
 
     /// Find the first occurrence of `pattern` as a complete syntactic
     /// sub-expression within `content`, excluding strings and comments.
@@ -104,10 +126,19 @@ pub trait LanguagePlugin: Send + Sync {
                 // sym_start: skip `(` and any whitespace
                 let b = content.as_bytes();
                 let mut s = form_start + 1;
-                while s < b.len() && matches!(b[s], b' ' | b'\t' | b'\n' | b'\r') { s += 1; }
+                while s < b.len() && matches!(b[s], b' ' | b'\t' | b'\n' | b'\r') {
+                    s += 1;
+                }
                 let mut e = s;
-                while e < b.len() && !matches!(b[e], b'(' | b')' | b' ' | b'\t' | b'\n' | b'\r') { e += 1; }
-                SymbolRef { form_start, sym_start: s, sym_end: e, kind: RefKind::CallHead }
+                while e < b.len() && !matches!(b[e], b'(' | b')' | b' ' | b'\t' | b'\n' | b'\r') {
+                    e += 1;
+                }
+                SymbolRef {
+                    form_start,
+                    sym_start: s,
+                    sym_end: e,
+                    kind: RefKind::CallHead,
+                }
             })
             .collect()
     }

@@ -16,9 +16,9 @@ pub struct RealRunner;
 
 impl Runner for RealRunner {
     fn run(&self, cmd: &mut Command) -> Result<(String, String, bool), Error> {
-        let output = cmd.output().map_err(|e| {
-            Error::Message(format!("failed to run evaluator: {e}"))
-        })?;
+        let output = cmd
+            .output()
+            .map_err(|e| Error::Message(format!("failed to run evaluator: {e}")))?;
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let ok = output.status.success();
@@ -60,11 +60,12 @@ fn find_evaluator(path: &str) -> Result<Command, Error> {
         ]);
         Ok(cmd)
     } else if path.ends_with(".lisp") || path.ends_with(".cl") {
-        let bin = which("sbcl")
-            .or_else(|_| which("ccl"))
-            .map_err(|_| Error::Message(
-                "no Common Lisp evaluator found (tried sbcl, ccl). Install one and try again.".into(),
-            ))?;
+        let bin = which("sbcl").or_else(|_| which("ccl")).map_err(|_| {
+            Error::Message(
+                "no Common Lisp evaluator found (tried sbcl, ccl). Install one and try again."
+                    .into(),
+            )
+        })?;
         let mut cmd = Command::new(bin);
         cmd.arg("--script").arg(path);
         Ok(cmd)
@@ -93,10 +94,7 @@ fn which(name: &str) -> Result<String, ()> {
 
     for var in &name_variants {
         if std::env::var_os("PATH")
-            .and_then(|path| {
-                std::env::split_paths(&path)
-                    .find(|dir| dir.join(var).exists())
-            })
+            .and_then(|path| std::env::split_paths(&path).find(|dir| dir.join(var).exists()))
             .is_some()
         {
             return Ok(var.clone());
@@ -160,12 +158,19 @@ mod tests {
 
     #[test]
     fn test_eval_file_with_mock_elisp_success() {
-        let dir = std::env::temp_dir().join(format!("lisp-sitter-eval-test-el-ok-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "lisp-sitter-eval-test-el-ok-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.el");
         std::fs::write(&path, "(+ 1 1)").unwrap();
-        let runner = MockRunner { stdout: "2".into(), stderr: String::new(), exit_ok: true };
+        let runner = MockRunner {
+            stdout: "2".into(),
+            stderr: String::new(),
+            exit_ok: true,
+        };
 
         let (out, err, ok) = eval_file_with(path.to_str().unwrap(), &runner).unwrap();
         assert_eq!(out, "2");
@@ -176,12 +181,19 @@ mod tests {
 
     #[test]
     fn test_eval_file_with_mock_elisp_failure() {
-        let dir = std::env::temp_dir().join(format!("lisp-sitter-eval-test-el-fail-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "lisp-sitter-eval-test-el-fail-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.el");
         std::fs::write(&path, "(error \"boom\")").unwrap();
-        let runner = MockRunner { stdout: String::new(), stderr: "error: boom".into(), exit_ok: false };
+        let runner = MockRunner {
+            stdout: String::new(),
+            stderr: "error: boom".into(),
+            exit_ok: false,
+        };
 
         let (out, err, ok) = eval_file_with(path.to_str().unwrap(), &runner).unwrap();
         assert!(out.is_empty());
@@ -192,7 +204,11 @@ mod tests {
 
     #[test]
     fn test_eval_file_with_mock_common_lisp() {
-        let runner = MockRunner { stdout: "42".into(), stderr: String::new(), exit_ok: true };
+        let runner = MockRunner {
+            stdout: "42".into(),
+            stderr: String::new(),
+            exit_ok: true,
+        };
 
         // find_evaluator for .lisp tries which("sbcl") first — skip if not installed
         let path = "/tmp/test.lisp";
@@ -211,7 +227,11 @@ mod tests {
 
     #[test]
     fn test_eval_file_with_mock_scheme() {
-        let runner = MockRunner { stdout: "42".into(), stderr: String::new(), exit_ok: true };
+        let runner = MockRunner {
+            stdout: "42".into(),
+            stderr: String::new(),
+            exit_ok: true,
+        };
 
         let path = "/tmp/test.scm";
         let cmd = find_evaluator(path);
@@ -229,7 +249,8 @@ mod tests {
 
     #[test]
     fn test_find_evaluator_elisp_constructs_command() {
-        let dir = std::env::temp_dir().join(format!("lisp-sitter-eval-test-cmd-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("lisp-sitter-eval-test-cmd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.el");

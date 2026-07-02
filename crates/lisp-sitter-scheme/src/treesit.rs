@@ -10,10 +10,16 @@ pub const DIALECT: Dialect = Dialect::Generic;
 
 /// Base top-level definition forms recognized for Scheme.
 pub fn base_definers() -> Vec<Definer> {
-    let mut defs: Vec<Definer> = ["define", "define-syntax", "define-record-type", "define-values", "define-structure"]
-        .into_iter()
-        .map(Definer::second)
-        .collect();
+    let mut defs: Vec<Definer> = [
+        "define",
+        "define-syntax",
+        "define-record-type",
+        "define-values",
+        "define-structure",
+    ]
+    .into_iter()
+    .map(Definer::second)
+    .collect();
     defs.push(Definer::new("define-library", NameStrategy::LibraryList));
     defs
 }
@@ -72,7 +78,8 @@ mod tests {
 
     #[test]
     fn parses_define_record_type() {
-        let content = "(define-record-type point (make-point x y) point? (x point-x) (y point-y))\n";
+        let content =
+            "(define-record-type point (make-point x y) point? (x point-x) (y point-y))\n";
         let forms = top_level_forms(content, &DefinerSet::new(base_definers()));
         assert_eq!(forms.len(), 1);
         assert_eq!(forms[0].name.as_deref(), Some("point"));

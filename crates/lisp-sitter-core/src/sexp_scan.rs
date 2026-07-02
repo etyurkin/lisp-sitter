@@ -33,7 +33,12 @@ pub fn top_level_definer_forms(
         let end = sexp_reader::skip_sexp_in(bytes, pos, dialect)
             .map_err(|(p, m)| error_at(content, p, m))?;
         if let Some((head, name)) = set.classify(&content[start..end]) {
-            forms.push(ScannedForm { start, end, head, name });
+            forms.push(ScannedForm {
+                start,
+                end,
+                head,
+                name,
+            });
         }
         pos = end;
     }

@@ -11,9 +11,21 @@ pub const DIALECT: Dialect = Dialect::Generic;
 /// Base top-level definition forms recognized for Common Lisp.
 pub fn base_definers() -> Vec<Definer> {
     [
-        "defun", "defmacro", "defclass", "defgeneric", "defmethod", "defvar",
-        "defparameter", "defconstant", "defstruct", "deftype", "define-condition",
-        "defpackage", "in-package", "defsetf", "define-compiler-macro",
+        "defun",
+        "defmacro",
+        "defclass",
+        "defgeneric",
+        "defmethod",
+        "defvar",
+        "defparameter",
+        "defconstant",
+        "defstruct",
+        "deftype",
+        "define-condition",
+        "defpackage",
+        "in-package",
+        "defsetf",
+        "define-compiler-macro",
         "define-symbol-macro",
     ]
     .into_iter()

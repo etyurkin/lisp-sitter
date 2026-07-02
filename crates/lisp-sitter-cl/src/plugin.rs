@@ -9,7 +9,9 @@ pub struct CommonLispPlugin {
 
 impl CommonLispPlugin {
     pub fn new() -> Self {
-        Self { definers: DefinerSet::new(base_definers()) }
+        Self {
+            definers: DefinerSet::new(base_definers()),
+        }
     }
 
     pub fn with_extra_definers(extra: &[String]) -> Self {
@@ -63,9 +65,11 @@ impl LanguagePlugin for CommonLispPlugin {
         let Some(tree) = crate::treesit::parse(content) else {
             return Ok(String::new());
         };
-        Ok(
-            lisp_sitter_core::treesit_util::recursive_outline(content, tree.root_node(), depth),
-        )
+        Ok(lisp_sitter_core::treesit_util::recursive_outline(
+            content,
+            tree.root_node(),
+            depth,
+        ))
     }
 
     fn node_bounds(&self, content: &str, symbol: &str) -> Result<(usize, usize)> {
@@ -80,7 +84,9 @@ impl LanguagePlugin for CommonLispPlugin {
 
         // ── check: missing docstrings ───────────────────────────
         for f in &forms {
-            let Some(_name) = f.name.as_deref() else { continue };
+            let Some(_name) = f.name.as_deref() else {
+                continue;
+            };
             let text = &content[f.start..f.end];
             let label = f.label.split(':').next().unwrap_or("");
             let wants_doc = matches!(
@@ -106,7 +112,17 @@ impl LanguagePlugin for CommonLispPlugin {
         let has_in_package = content.contains("(in-package ");
         let defines_something = forms.iter().any(|f| {
             let label = f.label.split(':').next().unwrap_or("");
-            matches!(label, "defun" | "defmacro" | "defclass" | "defgeneric" | "defmethod" | "defvar" | "defparameter" | "defstruct")
+            matches!(
+                label,
+                "defun"
+                    | "defmacro"
+                    | "defclass"
+                    | "defgeneric"
+                    | "defmethod"
+                    | "defvar"
+                    | "defparameter"
+                    | "defstruct"
+            )
         });
         if defines_something && !has_in_package {
             warnings.push(format!(
@@ -127,13 +143,18 @@ impl LanguagePlugin for CommonLispPlugin {
     fn form_params_and_body(&self, form_text: &str) -> Option<(Vec<String>, String)> {
         let tree = crate::treesit::parse(form_text)?;
         let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        Some((info.param_names, form_text[info.body_start..info.body_end].to_string()))
+        Some((
+            info.param_names,
+            form_text[info.body_start..info.body_end].to_string(),
+        ))
     }
 
     fn form_rename_name(&self, form_text: &str, old: &str, new: &str) -> Option<String> {
         let tree = crate::treesit::parse(form_text)?;
         let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        if &form_text[info.name_start..info.name_end] != old { return None; }
+        if &form_text[info.name_start..info.name_end] != old {
+            return None;
+        }
         let mut result = form_text.to_string();
         result.replace_range(info.name_start..info.name_end, new);
         Some(result)
@@ -141,12 +162,26 @@ impl LanguagePlugin for CommonLispPlugin {
 
     fn find_sexp_in(&self, content: &str, pattern: &str) -> Option<Option<(usize, usize)>> {
         let tree = crate::treesit::parse(content)?;
-        Some(lisp_sitter_core::treesit_util::find_sexp_in_tree(content, pattern, tree.root_node()))
+        Some(lisp_sitter_core::treesit_util::find_sexp_in_tree(
+            content,
+            pattern,
+            tree.root_node(),
+        ))
     }
 
-    fn find_symbol_refs(&self, content: &str, symbol: &str) -> Vec<lisp_sitter_core::plugin::SymbolRef> {
+    fn find_symbol_refs(
+        &self,
+        content: &str,
+        symbol: &str,
+    ) -> Vec<lisp_sitter_core::plugin::SymbolRef> {
         crate::treesit::parse(content)
-            .map(|tree| lisp_sitter_core::treesit_util::find_symbol_refs_in_tree(content, tree.root_node(), symbol))
+            .map(|tree| {
+                lisp_sitter_core::treesit_util::find_symbol_refs_in_tree(
+                    content,
+                    tree.root_node(),
+                    symbol,
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -171,32 +206,190 @@ fn is_cl_global(name: &str) -> bool {
     let set = SET.get_or_init(|| {
         [
             // special operators / macros
-            "if", "when", "unless", "cond", "case", "ccase", "ecase", "and", "or", "not", "progn",
-            "prog1", "prog2", "let", "let*", "flet", "labels", "macrolet", "block", "return",
-            "return-from", "lambda", "function", "quote", "setq", "setf", "psetf", "incf", "decf",
-            "push", "pop", "dolist", "dotimes", "do", "do*", "loop", "multiple-value-bind",
-            "destructuring-bind", "handler-case", "handler-bind", "unwind-protect", "catch", "throw",
-            "ignore-errors", "eval-when", "declaim", "declare", "the", "defun", "defmacro", "defvar",
-            "defparameter", "defconstant", "defclass", "defgeneric", "defmethod", "defstruct", "in-package",
-            "with-slots", "with-accessors", "with-open-file", "with-output-to-string",
-            "apply", "funcall", "mapcar", "mapc", "mapcan", "reduce", "remove-if", "remove-if-not", "find-if",
+            "if",
+            "when",
+            "unless",
+            "cond",
+            "case",
+            "ccase",
+            "ecase",
+            "and",
+            "or",
+            "not",
+            "progn",
+            "prog1",
+            "prog2",
+            "let",
+            "let*",
+            "flet",
+            "labels",
+            "macrolet",
+            "block",
+            "return",
+            "return-from",
+            "lambda",
+            "function",
+            "quote",
+            "setq",
+            "setf",
+            "psetf",
+            "incf",
+            "decf",
+            "push",
+            "pop",
+            "dolist",
+            "dotimes",
+            "do",
+            "do*",
+            "loop",
+            "multiple-value-bind",
+            "destructuring-bind",
+            "handler-case",
+            "handler-bind",
+            "unwind-protect",
+            "catch",
+            "throw",
+            "ignore-errors",
+            "eval-when",
+            "declaim",
+            "declare",
+            "the",
+            "defun",
+            "defmacro",
+            "defvar",
+            "defparameter",
+            "defconstant",
+            "defclass",
+            "defgeneric",
+            "defmethod",
+            "defstruct",
+            "in-package",
+            "with-slots",
+            "with-accessors",
+            "with-open-file",
+            "with-output-to-string",
+            "apply",
+            "funcall",
+            "mapcar",
+            "mapc",
+            "mapcan",
+            "reduce",
+            "remove-if",
+            "remove-if-not",
+            "find-if",
             // list / sequence
-            "car", "cdr", "caar", "cadr", "cddr", "cons", "list", "list*", "append", "nth", "nthcdr",
-            "first", "second", "third", "rest", "length", "reverse", "nreverse", "member", "assoc",
-            "elt", "aref", "svref", "vector", "make-array", "make-list", "last", "butlast", "subseq",
-            "remove", "delete", "find", "position", "count", "sort", "mapcar", "every", "some", "notany",
+            "car",
+            "cdr",
+            "caar",
+            "cadr",
+            "cddr",
+            "cons",
+            "list",
+            "list*",
+            "append",
+            "nth",
+            "nthcdr",
+            "first",
+            "second",
+            "third",
+            "rest",
+            "length",
+            "reverse",
+            "nreverse",
+            "member",
+            "assoc",
+            "elt",
+            "aref",
+            "svref",
+            "vector",
+            "make-array",
+            "make-list",
+            "last",
+            "butlast",
+            "subseq",
+            "remove",
+            "delete",
+            "find",
+            "position",
+            "count",
+            "sort",
+            "mapcar",
+            "every",
+            "some",
+            "notany",
             // predicates / equality
-            "eq", "eql", "equal", "equalp", "null", "atom", "consp", "listp", "stringp", "numberp",
-            "integerp", "symbolp", "functionp", "boundp", "fboundp", "zerop", "plusp", "minusp",
-            "typep", "values",
+            "eq",
+            "eql",
+            "equal",
+            "equalp",
+            "null",
+            "atom",
+            "consp",
+            "listp",
+            "stringp",
+            "numberp",
+            "integerp",
+            "symbolp",
+            "functionp",
+            "boundp",
+            "fboundp",
+            "zerop",
+            "plusp",
+            "minusp",
+            "typep",
+            "values",
             // arithmetic / strings
-            "+", "-", "*", "/", "mod", "rem", "1+", "1-", "max", "min", "abs", "expt", "sqrt", "floor",
-            "ceiling", "round", "truncate", "=", "/=", "<", ">", "<=", ">=", "concatenate", "format",
-            "string", "string=", "string<", "char", "substring", "parse-integer", "write-to-string",
-            "symbol-name", "intern", "make-symbol", "gensym",
+            "+",
+            "-",
+            "*",
+            "/",
+            "mod",
+            "rem",
+            "1+",
+            "1-",
+            "max",
+            "min",
+            "abs",
+            "expt",
+            "sqrt",
+            "floor",
+            "ceiling",
+            "round",
+            "truncate",
+            "=",
+            "/=",
+            "<",
+            ">",
+            "<=",
+            ">=",
+            "concatenate",
+            "format",
+            "string",
+            "string=",
+            "string<",
+            "char",
+            "substring",
+            "parse-integer",
+            "write-to-string",
+            "symbol-name",
+            "intern",
+            "make-symbol",
+            "gensym",
             // io / hash
-            "print", "princ", "prin1", "write", "write-line", "write-string", "error", "warn",
-            "make-hash-table", "gethash", "remhash", "maphash", "getf", "get",
+            "print",
+            "princ",
+            "prin1",
+            "write",
+            "write-line",
+            "write-string",
+            "error",
+            "warn",
+            "make-hash-table",
+            "gethash",
+            "remhash",
+            "maphash",
+            "getf",
+            "get",
         ]
         .into_iter()
         .collect()
@@ -243,7 +436,9 @@ mod tests {
     #[test]
     fn bounds_by_name() {
         let content = "(defun alpha () 1)\n(defun beta () 2)\n";
-        let bounds = CommonLispPlugin::new().node_bounds(content, "beta").unwrap();
+        let bounds = CommonLispPlugin::new()
+            .node_bounds(content, "beta")
+            .unwrap();
         assert!(bounds.0 < bounds.1);
     }
 }

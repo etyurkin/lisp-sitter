@@ -495,7 +495,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "lisp-sitter"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "lisp-sitter-cl"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "lisp-sitter-core",
  "tree-sitter",
@@ -526,7 +526,7 @@ dependencies = [
 
 [[package]]
 name = "lisp-sitter-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "serde",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "lisp-sitter-elisp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "lisp-sitter-core",
  "tree-sitter",
@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "lisp-sitter-scheme"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "lisp-sitter-core",
  "tree-sitter",

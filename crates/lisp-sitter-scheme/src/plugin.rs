@@ -9,7 +9,9 @@ pub struct SchemePlugin {
 
 impl SchemePlugin {
     pub fn new() -> Self {
-        Self { definers: DefinerSet::new(base_definers()) }
+        Self {
+            definers: DefinerSet::new(base_definers()),
+        }
     }
 
     pub fn with_extra_definers(extra: &[String]) -> Self {
@@ -63,9 +65,11 @@ impl LanguagePlugin for SchemePlugin {
         let Some(tree) = crate::treesit::parse(content) else {
             return Ok(String::new());
         };
-        Ok(
-            lisp_sitter_core::treesit_util::recursive_outline(content, tree.root_node(), depth),
-        )
+        Ok(lisp_sitter_core::treesit_util::recursive_outline(
+            content,
+            tree.root_node(),
+            depth,
+        ))
     }
 
     fn node_bounds(&self, content: &str, symbol: &str) -> Result<(usize, usize)> {
@@ -80,7 +84,8 @@ impl LanguagePlugin for SchemePlugin {
 
         // ── check: missing docstrings for function defines ──────
         for f in &forms {
-            if f.label.starts_with("define:") && !f.label.starts_with("define-library:")
+            if f.label.starts_with("define:")
+                && !f.label.starts_with("define-library:")
                 && f.label.split(':').nth(1).is_some_and(|n| !n.is_empty())
             {
                 let text = &content[f.start..f.end];
@@ -106,7 +111,10 @@ impl LanguagePlugin for SchemePlugin {
         }
 
         // ── suggest: library wrapper for multiple top-level defines ─
-        let library_defines = forms.iter().filter(|f| f.label.starts_with("define-library")).count();
+        let library_defines = forms
+            .iter()
+            .filter(|f| f.label.starts_with("define-library"))
+            .count();
         let non_library_defines = forms.len() - library_defines;
         if non_library_defines > 1 && library_defines == 0 {
             warnings.push(format!(
@@ -128,13 +136,18 @@ impl LanguagePlugin for SchemePlugin {
     fn form_params_and_body(&self, form_text: &str) -> Option<(Vec<String>, String)> {
         let tree = crate::treesit::parse(form_text)?;
         let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        Some((info.param_names, form_text[info.body_start..info.body_end].to_string()))
+        Some((
+            info.param_names,
+            form_text[info.body_start..info.body_end].to_string(),
+        ))
     }
 
     fn form_rename_name(&self, form_text: &str, old: &str, new: &str) -> Option<String> {
         let tree = crate::treesit::parse(form_text)?;
         let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        if &form_text[info.name_start..info.name_end] != old { return None; }
+        if &form_text[info.name_start..info.name_end] != old {
+            return None;
+        }
         let mut result = form_text.to_string();
         result.replace_range(info.name_start..info.name_end, new);
         Some(result)
@@ -142,12 +155,26 @@ impl LanguagePlugin for SchemePlugin {
 
     fn find_sexp_in(&self, content: &str, pattern: &str) -> Option<Option<(usize, usize)>> {
         let tree = crate::treesit::parse(content)?;
-        Some(lisp_sitter_core::treesit_util::find_sexp_in_tree(content, pattern, tree.root_node()))
+        Some(lisp_sitter_core::treesit_util::find_sexp_in_tree(
+            content,
+            pattern,
+            tree.root_node(),
+        ))
     }
 
-    fn find_symbol_refs(&self, content: &str, symbol: &str) -> Vec<lisp_sitter_core::plugin::SymbolRef> {
+    fn find_symbol_refs(
+        &self,
+        content: &str,
+        symbol: &str,
+    ) -> Vec<lisp_sitter_core::plugin::SymbolRef> {
         crate::treesit::parse(content)
-            .map(|tree| lisp_sitter_core::treesit_util::find_symbol_refs_in_tree(content, tree.root_node(), symbol))
+            .map(|tree| {
+                lisp_sitter_core::treesit_util::find_symbol_refs_in_tree(
+                    content,
+                    tree.root_node(),
+                    symbol,
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -172,28 +199,154 @@ fn is_scheme_global(name: &str) -> bool {
     let set = SET.get_or_init(|| {
         [
             // syntax / special forms
-            "define", "define-syntax", "define-values", "define-record-type", "lambda", "let", "let*",
-            "letrec", "letrec*", "let-values", "let*-values", "if", "cond", "case", "when", "unless",
-            "and", "or", "not", "begin", "do", "delay", "force", "quote", "quasiquote", "unquote",
-            "set!", "else", "=>", "syntax-rules", "parameterize", "guard", "dynamic-wind", "values",
-            "call-with-values", "call/cc", "call-with-current-continuation", "apply", "map", "for-each",
-            "filter", "fold-left", "fold-right", "reduce", "vector-map", "vector-for-each",
+            "define",
+            "define-syntax",
+            "define-values",
+            "define-record-type",
+            "lambda",
+            "let",
+            "let*",
+            "letrec",
+            "letrec*",
+            "let-values",
+            "let*-values",
+            "if",
+            "cond",
+            "case",
+            "when",
+            "unless",
+            "and",
+            "or",
+            "not",
+            "begin",
+            "do",
+            "delay",
+            "force",
+            "quote",
+            "quasiquote",
+            "unquote",
+            "set!",
+            "else",
+            "=>",
+            "syntax-rules",
+            "parameterize",
+            "guard",
+            "dynamic-wind",
+            "values",
+            "call-with-values",
+            "call/cc",
+            "call-with-current-continuation",
+            "apply",
+            "map",
+            "for-each",
+            "filter",
+            "fold-left",
+            "fold-right",
+            "reduce",
+            "vector-map",
+            "vector-for-each",
             // pairs / lists
-            "car", "cdr", "caar", "cadr", "cddr", "caddr", "cons", "list", "list*", "append", "reverse",
-            "length", "list-ref", "list-tail", "member", "memq", "memv", "assoc", "assq", "assv",
-            "null?", "pair?", "list?", "set-car!", "set-cdr!", "last-pair", "cons*",
+            "car",
+            "cdr",
+            "caar",
+            "cadr",
+            "cddr",
+            "caddr",
+            "cons",
+            "list",
+            "list*",
+            "append",
+            "reverse",
+            "length",
+            "list-ref",
+            "list-tail",
+            "member",
+            "memq",
+            "memv",
+            "assoc",
+            "assq",
+            "assv",
+            "null?",
+            "pair?",
+            "list?",
+            "set-car!",
+            "set-cdr!",
+            "last-pair",
+            "cons*",
             // predicates / equality
-            "eq?", "eqv?", "equal?", "zero?", "positive?", "negative?", "odd?", "even?", "number?",
-            "integer?", "string?", "symbol?", "procedure?", "boolean?", "char?", "vector?", "eof-object?",
+            "eq?",
+            "eqv?",
+            "equal?",
+            "zero?",
+            "positive?",
+            "negative?",
+            "odd?",
+            "even?",
+            "number?",
+            "integer?",
+            "string?",
+            "symbol?",
+            "procedure?",
+            "boolean?",
+            "char?",
+            "vector?",
+            "eof-object?",
             // arithmetic / strings
-            "+", "-", "*", "/", "modulo", "remainder", "quotient", "abs", "min", "max", "expt", "sqrt",
-            "floor", "ceiling", "round", "truncate", "=", "<", ">", "<=", ">=", "1+", "add1", "sub1",
-            "number->string", "string->number", "string-append", "string-length", "substring",
-            "string=?", "string<?", "string->symbol", "symbol->string", "string->list", "list->string",
-            "string-ref", "make-string", "string", "char->integer", "integer->char",
+            "+",
+            "-",
+            "*",
+            "/",
+            "modulo",
+            "remainder",
+            "quotient",
+            "abs",
+            "min",
+            "max",
+            "expt",
+            "sqrt",
+            "floor",
+            "ceiling",
+            "round",
+            "truncate",
+            "=",
+            "<",
+            ">",
+            "<=",
+            ">=",
+            "1+",
+            "add1",
+            "sub1",
+            "number->string",
+            "string->number",
+            "string-append",
+            "string-length",
+            "substring",
+            "string=?",
+            "string<?",
+            "string->symbol",
+            "symbol->string",
+            "string->list",
+            "list->string",
+            "string-ref",
+            "make-string",
+            "string",
+            "char->integer",
+            "integer->char",
             // vectors / io
-            "vector", "make-vector", "vector-ref", "vector-set!", "vector-length", "vector->list",
-            "list->vector", "display", "write", "newline", "read", "error", "raise", "exit",
+            "vector",
+            "make-vector",
+            "vector-ref",
+            "vector-set!",
+            "vector-length",
+            "vector->list",
+            "list->vector",
+            "display",
+            "write",
+            "newline",
+            "read",
+            "error",
+            "raise",
+            "exit",
         ]
         .into_iter()
         .collect()

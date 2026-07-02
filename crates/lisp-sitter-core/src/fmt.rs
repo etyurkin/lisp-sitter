@@ -146,7 +146,6 @@ fn format_inner(source: &str, dialect: Dialect, align: bool) -> String {
             continue;
         }
 
-
         // ── in a block comment ──────────────────────────────────
         if in_block_comment {
             out.push(bytes[i] as char);
@@ -184,8 +183,11 @@ fn format_inner(source: &str, dialect: Dialect, align: bool) -> String {
                     }
                     // Read the head symbol (keyword) and remember it
                     let head_start = j;
-                    while j < bytes.len() && !bytes[j].is_ascii_whitespace()
-                        && bytes[j] != b'\n' && bytes[j] != b')' && bytes[j] != b'('
+                    while j < bytes.len()
+                        && !bytes[j].is_ascii_whitespace()
+                        && bytes[j] != b'\n'
+                        && bytes[j] != b')'
+                        && bytes[j] != b'('
                     {
                         j += 1;
                     }
@@ -195,11 +197,23 @@ fn format_inner(source: &str, dialect: Dialect, align: bool) -> String {
                         j += 1;
                     }
                     // Definitions / special forms → no alignment (body at depth*2).
-                    let is_def = head.starts_with("def") || matches!(head, "define" | "define-syntax" | "define-record-type" | "lambda" | "let" | "let*");
+                    let is_def = head.starts_with("def")
+                        || matches!(
+                            head,
+                            "define"
+                                | "define-syntax"
+                                | "define-record-type"
+                                | "lambda"
+                                | "let"
+                                | "let*"
+                        );
                     // If the first arg is on the same line, use its column
                     // as the anchor for call forms.
-                    if j < bytes.len() && bytes[j] != b'\n' && bytes[j] != b')'
-                        && !is_def && !head.is_empty()
+                    if j < bytes.len()
+                        && bytes[j] != b'\n'
+                        && bytes[j] != b')'
+                        && !is_def
+                        && !head.is_empty()
                     {
                         // Anchor = column of the first argument
                         let anchor = start_of_form + (j - i) as u32;
@@ -418,8 +432,11 @@ mod tests {
         // Nested binding list ((x 1) (y 2)) creates two depth levels.
         // (y 2) is at actual depth 2 → 4-space indent from depth*2.
         let solved = "(let ((x 1)\n    (y 2))\n  (+ x y))\n";
-        assert_eq!(format_source_aligned("(let ((x 1)\n  (y 2))\n  (+ x y))\n"), solved,
-            "deeper continuation aligns to actual depth");
+        assert_eq!(
+            format_source_aligned("(let ((x 1)\n  (y 2))\n  (+ x y))\n"),
+            solved,
+            "deeper continuation aligns to actual depth"
+        );
     }
 
     #[test]
@@ -433,7 +450,11 @@ mod tests {
     fn aligned_fn_args() {
         // Function call: continuation aligns to first argument column
         let src = "(defun foo (x)\n  (message \"Hello %s\"\n           x))\n";
-        assert_eq!(format_source_aligned(src), src, "fn args aligned to first arg");
+        assert_eq!(
+            format_source_aligned(src),
+            src,
+            "fn args aligned to first arg"
+        );
     }
 
     #[test]
@@ -456,7 +477,10 @@ mod tests {
         let mis = "(defun foo (x)\n  (message \"hi\"\n    x))\n";
         let want = "(defun foo (x)\n  (message \"hi\"\n           x))\n";
         let got = format_source_aligned(mis);
-        assert_eq!(got, want, "should align to first arg col\nwant:\n{want}\ngot:\n{got}");
+        assert_eq!(
+            got, want,
+            "should align to first arg col\nwant:\n{want}\ngot:\n{got}"
+        );
     }
 
     #[test]

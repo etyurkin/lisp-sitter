@@ -6,9 +6,7 @@ use crate::sexp_reader::Dialect;
 use crate::FormInfo;
 
 pub fn node_text(node: Node, source: &str) -> String {
-    node.utf8_text(source.as_bytes())
-        .unwrap_or("")
-        .to_string()
+    node.utf8_text(source.as_bytes()).unwrap_or("").to_string()
 }
 
 /// One [`FormInfo`] per recognized top-level definition under `root`.
@@ -76,9 +74,11 @@ pub fn validate_treesit(content: &str, has_parse_errors: bool) -> crate::Result<
         return Err(crate::error::Error::Syntax(err));
     }
     if has_parse_errors {
-        return Err(crate::error::Error::Syntax(
-            crate::position::error_at(content, 0, "tree-sitter parse error"),
-        ));
+        return Err(crate::error::Error::Syntax(crate::position::error_at(
+            content,
+            0,
+            "tree-sitter parse error",
+        )));
     }
     Ok(())
 }
@@ -202,7 +202,10 @@ pub fn has_docstring(form_text: &str) -> bool {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'(' => { depth += 1; i += 1; }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
             b')' => {
                 // depth==2: closing the arglist (defun f (x) "…")
                 // The outer `)` of the defun is at depth==1 and is ignored.
@@ -216,14 +219,26 @@ pub fn has_docstring(form_text: &str) -> bool {
                 // Found a string literal right after the arglist — that's the docstring.
                 return true;
             }
-            b';' => { while i < bytes.len() && bytes[i] != b'\n' { i += 1; } }
-            b'#' if i + 1 < bytes.len() && bytes[i+1] == b'|' => {
-                while i + 1 < bytes.len() && !(bytes[i] == b'|' && bytes[i+1] == b'#') { i += 1; }
-                if i < bytes.len() { i += 2; }
+            b';' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
             }
-            _ => { i += 1; }
+            b'#' if i + 1 < bytes.len() && bytes[i + 1] == b'|' => {
+                while i + 1 < bytes.len() && !(bytes[i] == b'|' && bytes[i + 1] == b'#') {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 2;
+                }
+            }
+            _ => {
+                i += 1;
+            }
         }
-        if depth < 0 { break; }
+        if depth < 0 {
+            break;
+        }
     }
     false
 }
@@ -269,13 +284,17 @@ pub fn find_sexp_in_tree(content: &str, pattern: &str, root: Node) -> Option<(us
 
 fn find_sexp_in_node(content: &str, pat: &str, node: Node) -> Option<(usize, usize)> {
     let kind = node.kind();
-    if kind.contains("string") || kind.contains("comment") { return None; }
+    if kind.contains("string") || kind.contains("comment") {
+        return None;
+    }
 
     let s = node.start_byte();
     let e = node.end_byte();
 
     // Prune: subtree nodes are never larger than the current node.
-    if e.saturating_sub(s) < pat.len() { return None; }
+    if e.saturating_sub(s) < pat.len() {
+        return None;
+    }
 
     if &content[s..e] == pat {
         return Some((s, e));
@@ -300,7 +319,7 @@ pub struct DefFormInfo {
     /// head keyword, name, qualifiers, parameter list, and any preamble
     /// (docstrings / `declare` forms).
     pub body_start: usize,
-    pub body_end:   usize,
+    pub body_end: usize,
     /// Parameter names taken from the parameter list.  For CL specialised
     /// params `((x MyClass) y)` the name part (`x`) is extracted; `&rest`
     /// and friends are kept verbatim so the caller can reject them.
@@ -309,7 +328,7 @@ pub struct DefFormInfo {
     /// the form text.  For curried Scheme `(define (name params) …)` this
     /// points to the `name` inside the signature list.
     pub name_start: usize,
-    pub name_end:   usize,
+    pub name_end: usize,
 }
 
 /// Analyse a parsed definition form and return its structural parts.
@@ -330,7 +349,9 @@ pub fn analyze_def_form(form_text: &str, root: Node) -> Option<DefFormInfo> {
         .filter(|n| !matches!(n.kind(), "(" | ")") && !n.is_extra())
         .collect();
 
-    if ch.len() < 2 { return None; }
+    if ch.len() < 2 {
+        return None;
+    }
 
     // ── Detect curried Scheme define: (define (name params…) body…) ──────
     let name1_s = ch[1].start_byte();
@@ -340,29 +361,34 @@ pub fn analyze_def_form(form_text: &str, root: Node) -> Option<DefFormInfo> {
             .into_iter()
             .filter(|n| !matches!(n.kind(), "(" | ")") && !n.is_extra())
             .collect();
-        if sig_ch.is_empty() { return None; }
+        if sig_ch.is_empty() {
+            return None;
+        }
 
         let actual_name = sig_ch[0];
-        let param_names: Vec<String> = sig_ch[1..].iter()
+        let param_names: Vec<String> = sig_ch[1..]
+            .iter()
             .map(|n| form_text[n.start_byte()..n.end_byte()].to_string())
             .filter(|s| !s.is_empty())
             .collect();
 
         let after = skip_preamble_ch(&ch[2..], form_text, b);
-        if after.is_empty() { return None; }
+        if after.is_empty() {
+            return None;
+        }
 
         return Some(DefFormInfo {
-            body_start:  after[0].start_byte(),
-            body_end:    after.last().unwrap().end_byte(),
+            body_start: after[0].start_byte(),
+            body_end: after.last().unwrap().end_byte(),
             param_names,
-            name_start:  actual_name.start_byte(),
-            name_end:    actual_name.end_byte(),
+            name_start: actual_name.start_byte(),
+            name_end: actual_name.end_byte(),
         });
     }
 
     // ── Normal form: ch[1] is the name symbol ────────────────────────────
     let name_start = ch[1].start_byte();
-    let name_end   = ch[1].end_byte();
+    let name_end = ch[1].end_byte();
 
     // Skip qualifier tokens/lists that precede the parameter list.
     // A qualifier is a keyword (starts with ':') or a list whose first
@@ -370,18 +396,28 @@ pub fn analyze_def_form(form_text: &str, root: Node) -> Option<DefFormInfo> {
     let mut i = 2usize;
     while i < ch.len() {
         let cs = ch[i].start_byte();
-        if b.get(cs) == Some(&b':') { i += 1; continue; } // bare keyword
+        if b.get(cs) == Some(&b':') {
+            i += 1;
+            continue;
+        } // bare keyword
         if b.get(cs) == Some(&b'(') {
-            let first_ch = child_nodes(ch[i]).into_iter()
+            let first_ch = child_nodes(ch[i])
+                .into_iter()
                 .find(|n| !matches!(n.kind(), "(" | ")") && !n.is_extra());
-            if first_ch.map(|n| b.get(n.start_byte()) == Some(&b':')).unwrap_or(false) {
-                i += 1; continue; // qualifier list like (:before :after)
+            if first_ch
+                .map(|n| b.get(n.start_byte()) == Some(&b':'))
+                .unwrap_or(false)
+            {
+                i += 1;
+                continue; // qualifier list like (:before :after)
             }
             break; // actual param list
         }
         break;
     }
-    if i >= ch.len() { return None; }
+    if i >= ch.len() {
+        return None;
+    }
 
     let param_list = ch[i];
     let param_names: Vec<String> = child_nodes(param_list)
@@ -391,7 +427,8 @@ pub fn analyze_def_form(form_text: &str, root: Node) -> Option<DefFormInfo> {
             let t = &form_text[n.start_byte()..n.end_byte()];
             if t.starts_with('(') {
                 // Specialised CL param (var type) — extract var name.
-                child_nodes(n).into_iter()
+                child_nodes(n)
+                    .into_iter()
                     .find(|c| !matches!(c.kind(), "(" | ")") && !c.is_extra())
                     .map(|c| form_text[c.start_byte()..c.end_byte()].to_string())
                     .unwrap_or_default()
@@ -403,11 +440,13 @@ pub fn analyze_def_form(form_text: &str, root: Node) -> Option<DefFormInfo> {
         .collect();
 
     let after = skip_preamble_ch(&ch[i + 1..], form_text, b);
-    if after.is_empty() { return None; }
+    if after.is_empty() {
+        return None;
+    }
 
     Some(DefFormInfo {
-        body_start:  after[0].start_byte(),
-        body_end:    after.last().unwrap().end_byte(),
+        body_start: after[0].start_byte(),
+        body_end: after.last().unwrap().end_byte(),
         param_names,
         name_start,
         name_end,
@@ -419,12 +458,19 @@ fn skip_preamble_ch<'a>(nodes: &'a [Node<'a>], content: &str, b: &[u8]) -> &'a [
     let mut s = 0;
     while s < nodes.len() {
         let cs = nodes[s].start_byte();
-        if b.get(cs) == Some(&b'"') { s += 1; continue; } // docstring
+        if b.get(cs) == Some(&b'"') {
+            s += 1;
+            continue;
+        } // docstring
         if b.get(cs) == Some(&b'(') {
-            let head = child_nodes(nodes[s]).into_iter()
+            let head = child_nodes(nodes[s])
+                .into_iter()
                 .find(|n| !matches!(n.kind(), "(" | ")") && !n.is_extra())
                 .map(|n| &content[n.start_byte()..n.end_byte()]);
-            if head == Some("declare") { s += 1; continue; }
+            if head == Some("declare") {
+                s += 1;
+                continue;
+            }
         }
         break;
     }
@@ -436,12 +482,28 @@ fn skip_preamble_ch<'a>(nodes: &'a [Node<'a>], content: &str, b: &[u8]) -> &'a [
 /// Keywords that introduce a binding list as their first argument.
 /// Used to detect `(sym init)` binding specs that should not be treated as calls.
 pub fn is_let_keyword(kw: &str) -> bool {
-    matches!(kw,
-        "let" | "let*" | "letrec" | "letrec*" |
-        "cl-let*" | "pcase-let" | "pcase-let*" |
-        "if-let" | "if-let*" | "when-let" | "when-let*" | "and-let*" | "fluid-let" |
-        "flet" | "labels" | "macrolet" | "symbol-macrolet" |
-        "let-values" | "let*-values" | "receive"
+    matches!(
+        kw,
+        "let"
+            | "let*"
+            | "letrec"
+            | "letrec*"
+            | "cl-let*"
+            | "pcase-let"
+            | "pcase-let*"
+            | "if-let"
+            | "if-let*"
+            | "when-let"
+            | "when-let*"
+            | "and-let*"
+            | "fluid-let"
+            | "flet"
+            | "labels"
+            | "macrolet"
+            | "symbol-macrolet"
+            | "let-values"
+            | "let*-values"
+            | "receive"
     )
 }
 
@@ -493,17 +555,36 @@ fn classify_ref(b: &[u8], sym_node: Node) -> Option<SymbolRef> {
 
     // Determine reference kind from the bytes at the parent node's start.
     if ps + 1 < b.len() && b[ps] == b'#' && b[ps + 1] == b'\'' {
-        return Some(SymbolRef { form_start: ps, sym_start: sym_s, sym_end: sym_e, kind: RefKind::SharpQuote });
+        return Some(SymbolRef {
+            form_start: ps,
+            sym_start: sym_s,
+            sym_end: sym_e,
+            kind: RefKind::SharpQuote,
+        });
     }
     if b[ps] == b'\'' {
-        return Some(SymbolRef { form_start: ps, sym_start: sym_s, sym_end: sym_e, kind: RefKind::Quote });
+        return Some(SymbolRef {
+            form_start: ps,
+            sym_start: sym_s,
+            sym_end: sym_e,
+            kind: RefKind::Quote,
+        });
     }
     if b[ps] == b'(' {
         // Check that this symbol is the head (first meaningful child) of the list.
-        if !is_head_of_list(sym_node, parent) { return None; }
+        if !is_head_of_list(sym_node, parent) {
+            return None;
+        }
         // Filter out let-binding variable positions.
-        if is_binding_var_position(parent, b) { return None; }
-        return Some(SymbolRef { form_start: ps, sym_start: sym_s, sym_end: sym_e, kind: RefKind::CallHead });
+        if is_binding_var_position(parent, b) {
+            return None;
+        }
+        return Some(SymbolRef {
+            form_start: ps,
+            sym_start: sym_s,
+            sym_end: sym_e,
+            kind: RefKind::CallHead,
+        });
     }
     None
 }
@@ -512,7 +593,9 @@ fn is_head_of_list(sym: Node, parent: Node) -> bool {
     let mut cursor = parent.walk();
     for child in parent.children(&mut cursor) {
         let k = child.kind();
-        if matches!(k, "(" | ")") || child.is_extra() { continue; }
+        if matches!(k, "(" | ")") || child.is_extra() {
+            continue;
+        }
         return child.start_byte() == sym.start_byte();
     }
     false
@@ -523,19 +606,34 @@ fn is_head_of_list(sym: Node, parent: Node) -> bool {
 /// whose parent is the binding list of a `let`/`let*`/etc. form.
 fn is_binding_var_position(call_head_list: Node, b: &[u8]) -> bool {
     // call_head_list = (sym …) — could be a binding spec (sym init)
-    let binding_list = match call_head_list.parent() { Some(n) => n, None => return false };
-    if b.get(binding_list.start_byte()) != Some(&b'(') { return false; }
+    let binding_list = match call_head_list.parent() {
+        Some(n) => n,
+        None => return false,
+    };
+    if b.get(binding_list.start_byte()) != Some(&b'(') {
+        return false;
+    }
 
-    let let_form = match binding_list.parent() { Some(n) => n, None => return false };
-    if b.get(let_form.start_byte()) != Some(&b'(') { return false; }
+    let let_form = match binding_list.parent() {
+        Some(n) => n,
+        None => return false,
+    };
+    if b.get(let_form.start_byte()) != Some(&b'(') {
+        return false;
+    }
 
     // binding_list must be the second sexp child (index 1) of let_form.
     let mut cursor = let_form.walk();
-    let meaningful: Vec<_> = let_form.children(&mut cursor)
+    let meaningful: Vec<_> = let_form
+        .children(&mut cursor)
         .filter(|c| !matches!(c.kind(), "(" | ")") && !c.is_extra())
         .collect();
-    if meaningful.len() < 2 { return false; }
-    if meaningful[1].start_byte() != binding_list.start_byte() { return false; }
+    if meaningful.len() < 2 {
+        return false;
+    }
+    if meaningful[1].start_byte() != binding_list.start_byte() {
+        return false;
+    }
 
     // The first sexp child of let_form must be a let keyword.
     let head_start = meaningful[0].start_byte();
