@@ -1,4 +1,9 @@
 use lisp_sitter_core::edit::{ensure_source_editable, get_form_text, insert_after, replace_node};
+use lisp_sitter_core::form_scan::{
+    body_range_char, count_forms, def_params_and_body_char, find_enclosing_sexp, find_sexp_char,
+    replace_name_in_form_char, skip_sexp_d, skip_sp, skip_sym, split_elements, substitute_symbol,
+    wrap_multi_body,
+};
 use lisp_sitter_core::plugin::RefKind;
 use lisp_sitter_core::sexp_reader::Dialect;
 use lisp_sitter_core::{Error, LanguagePlugin, Registry};
@@ -26,31 +31,6 @@ fn relabel_edit(e: Error, op: &str) -> Error {
     }
 }
 
-fn skip_sp(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-fn skip_sym(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'(' && bytes[i] != b')'
-    {
-        i += 1;
-    }
-    i
-}
-
-/// Skip one s-expression using the shared core scanner (handles strings,
-/// comments, char literals, vectors). On malformed input (e.g. a stray `)` or
-/// EOF) the position is left unchanged, so callers must guard against
-/// no-progress when looping.
-fn skip_sexp(bytes: &[u8], i: usize) -> usize {
-    skip_sexp_d(bytes, i, Dialect::Generic)
-}
-fn skip_sexp_d(bytes: &[u8], i: usize, d: Dialect) -> usize {
-    lisp_sitter_core::sexp_reader::skip_sexp_in(bytes, i, d).unwrap_or(i)
-}
-
 /// Try `plugin.find_sexp_in` (tree-sitter, skips strings/comments via AST),
 /// falling back to the character scanner only when tree-sitter is unavailable.
 fn find_sexp(
@@ -65,65 +45,6 @@ fn find_sexp(
     }
 }
 
-/// Character-level fallback for `find_sexp`. Skips strings, line comments,
-/// block comments, and char literals, then checks sexp boundaries.
-fn find_sexp_char(ft: &str, pat: &str, d: Dialect) -> Option<(usize, usize)> {
-    use lisp_sitter_core::sexp_reader::{
-        skip_block_comment, skip_line_comment, skip_sexp_in, skip_string,
-    };
-    let b = ft.as_bytes();
-    let pb = pat.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        i = match b[i] {
-            b'"' => skip_string(b, i).unwrap_or(b.len()),
-            b';' => skip_line_comment(b, i).unwrap_or(b.len()),
-            b'#' if i + 1 < b.len() && b[i + 1] == b'|' => {
-                skip_block_comment(b, i).unwrap_or(b.len())
-            }
-            b'?' if d == Dialect::Elisp => skip_sexp_in(b, i, d).unwrap_or(i + 1),
-            _ => {
-                if i + pb.len() <= b.len() && &b[i..i + pb.len()] == pb {
-                    let n = i + pb.len();
-                    let po = i == 0 || b[i - 1].is_ascii_whitespace() || b[i - 1] == b'(';
-                    let no =
-                        n >= b.len() || b[n].is_ascii_whitespace() || b[n] == b')' || b[n] == b'(';
-                    if po && no {
-                        return Some((i, n));
-                    }
-                }
-                i + 1
-            }
-        };
-    }
-    None
-}
-
-/// Skip past leading docstrings (string literals) and Common Lisp `(declare …)` forms
-/// so that `body_range` returns the range of the actual executable body.
-fn skip_preamble(b: &[u8], mut pos: usize) -> usize {
-    loop {
-        pos = skip_sp(b, pos);
-        if pos >= b.len() {
-            break;
-        }
-        if b[pos] == b'"' {
-            pos = skip_sexp(b, pos);
-        } else if b[pos] == b'(' {
-            let inner = skip_sp(b, pos + 1);
-            let kw_end = skip_sym(b, inner);
-            if kw_end > inner && &b[inner..kw_end] == b"declare" {
-                pos = skip_sexp(b, pos);
-            } else {
-                break;
-            }
-        } else {
-            break;
-        }
-    }
-    pos
-}
-
 /// Find the body byte range within a form, skipping head, name, qualifiers,
 /// param list, and any preamble. Uses the plugin's tree-sitter analysis when
 /// available; falls back to the character-level scanner otherwise.
@@ -134,32 +55,6 @@ fn body_range(plugin: &dyn LanguagePlugin, ft: &str) -> Result<(usize, usize), E
         }
     }
     body_range_char(ft)
-}
-
-fn body_range_char(ft: &str) -> Result<(usize, usize), Error> {
-    let b = ft.as_bytes();
-    let mut pos = 0;
-    if pos >= b.len() || b[pos] != b'(' {
-        return Err(Error::InvalidArgs("form must start with (".into()));
-    }
-    pos += 1;
-    pos = skip_sp(b, pos);
-    pos = skip_sym(b, pos);
-    pos = skip_sp(b, pos);
-    pos = skip_sexp(b, pos);
-    pos = skip_sp(b, pos);
-    pos = skip_sexp(b, pos);
-    pos = skip_sp(b, pos);
-    pos = skip_preamble(b, pos);
-    let bs = pos;
-    if b.last() != Some(&b')') {
-        return Err(Error::InvalidArgs("form must end with )".into()));
-    }
-    let be = ft.len() - 1;
-    if bs > be {
-        return Err(Error::InvalidArgs("no body to wrap".into()));
-    }
-    Ok((bs, be))
 }
 
 /// Controls which `old`-symbol references `replace_head_symbol` renames.
@@ -310,34 +205,6 @@ fn replace_node_header(
         .form_rename_name(ft, old, new)
         .unwrap_or_else(|| replace_name_in_form_char(ft, old, new));
     replace_node(p, c, old, &renamed)
-}
-
-/// Fallback character-level rename of the definition name.
-fn replace_name_in_form_char(t: &str, old: &str, new: &str) -> String {
-    let s = t.trim();
-    if !s.starts_with('(') {
-        return t.to_string();
-    }
-    let a = &s[1..].trim_start();
-    let he = a.find(|c: char| c.is_whitespace()).unwrap_or(0);
-    if he == 0 {
-        return t.to_string();
-    }
-    let ah = &a[he..].trim_start();
-    if let Some(inner) = ah.strip_prefix('(') {
-        let ne = inner
-            .find(|c: char| c.is_whitespace() || c == ')')
-            .unwrap_or(inner.len());
-        if &inner[..ne] == old {
-            return format!("({} ({}{}", &a[..he], new, &inner[ne..]);
-        }
-    } else {
-        let ne = ah.find(|c: char| c.is_whitespace()).unwrap_or(ah.len());
-        if &ah[..ne] == old {
-            return format!("({} {}{}", &a[..he], new, &ah[ne..]);
-        }
-    }
-    t.to_string()
 }
 
 // ── remove ─────────────────────────────────────────────────────
@@ -532,22 +399,6 @@ pub fn wrap_body(
     replace_node(p, &c, sym, &nf)
 }
 
-/// Count the top-level forms in `body` using the shared scanner.
-fn count_forms(body: &str) -> usize {
-    let b = body.as_bytes();
-    let mut i = skip_sp(b, 0);
-    let mut count = 0;
-    while i < b.len() {
-        let n = skip_sexp(b, i);
-        if n <= i {
-            break;
-        }
-        count += 1;
-        i = skip_sp(b, n);
-    }
-    count
-}
-
 fn make_wrapper(w: &str, a: &[(&str, &str)], body: &str) -> Result<String, Error> {
     let b = body.trim();
     match w {
@@ -649,31 +500,6 @@ fn instr_body(body: &str, trace: &str, d: Dialect) -> Result<String, Error> {
 // ── flatten ────────────────────────────────────────────────────
 
 /// Byte ranges of the elements inside a form `(head e1 e2 …)`, relative to `ft`.
-fn split_elements(ft: &str, d: Dialect) -> Vec<(usize, usize)> {
-    let b = ft.as_bytes();
-    let open = match ft.find('(') {
-        Some(o) => o + 1,
-        None => return Vec::new(),
-    };
-    let close = ft.rfind(')').unwrap_or(ft.len());
-    let mut i = open;
-    let mut elems = Vec::new();
-    while i < close {
-        i = skip_sp(b, i);
-        if i >= close {
-            break;
-        }
-        let s = i;
-        let e = skip_sexp_d(b, i, d).min(close);
-        if e <= s {
-            break;
-        }
-        elems.push((s, e));
-        i = e;
-    }
-    elems
-}
-
 /// Parse a function definition into (param names, single body expression).
 /// Uses the plugin's tree-sitter analysis when available; falls back to the
 /// character-level scanner. Multi-form bodies are wrapped with `progn`/`begin`.
@@ -688,149 +514,6 @@ fn def_params_and_body(
         return Some((params, body));
     }
     def_params_and_body_char(ft, d)
-}
-
-/// Wrap multiple body forms into a single expression if needed.
-fn wrap_multi_body(body_text: &str, d: Dialect) -> String {
-    // Count top-level forms in the body text.
-    let b = body_text.as_bytes();
-    let mut i = 0;
-    let mut count = 0;
-    while i < b.len() {
-        i = lisp_sitter_core::sexp_reader::skip_whitespace_and_comments(b, i);
-        if i >= b.len() {
-            break;
-        }
-        match lisp_sitter_core::sexp_reader::skip_sexp_in(b, i, d) {
-            Ok(next) => {
-                count += 1;
-                i = next;
-            }
-            Err(_) => break,
-        }
-    }
-    if count <= 1 {
-        body_text.trim().to_string()
-    } else {
-        let kw = if d == Dialect::Generic {
-            "begin"
-        } else {
-            "progn"
-        };
-        format!("({kw} {})", body_text.trim())
-    }
-}
-
-/// Character-level fallback for `def_params_and_body`.
-fn def_params_and_body_char(ft: &str, d: Dialect) -> Option<(Vec<String>, String)> {
-    let elems = split_elements(ft, d);
-    if elems.len() < 3 {
-        return None;
-    }
-    let head = &ft[elems[0].0..elems[0].1];
-    let close = ft.rfind(')').unwrap_or(ft.len());
-
-    let (params, body_idx) = if head == "define" && ft[elems[1].0..elems[1].1].starts_with('(') {
-        // Scheme curried define: (define (name p…) body…)
-        let sig = &ft[elems[1].0..elems[1].1];
-        let sig_elems = split_elements(sig, d);
-        if sig_elems.is_empty() {
-            return None;
-        }
-        let params = sig_elems
-            .iter()
-            .skip(1)
-            .map(|(s, e)| sig[*s..*e].to_string())
-            .collect();
-        (params, 2)
-    } else {
-        // (head name (args) body…)
-        let arglist = &ft[elems[2].0..elems[2].1];
-        if !arglist.starts_with('(') {
-            return None;
-        }
-        let params = split_elements(arglist, d)
-            .iter()
-            .map(|(s, e)| arglist[*s..*e].to_string())
-            .collect();
-        (params, 3)
-    };
-
-    if elems.len() <= body_idx {
-        return None;
-    }
-    let body_text = ft[elems[body_idx].0..close].trim().to_string();
-    if body_text.is_empty() {
-        return None;
-    }
-    let body = if elems.len() - body_idx > 1 {
-        let kw = if d == Dialect::Generic && head == "define" {
-            "begin"
-        } else {
-            "progn"
-        };
-        format!("({kw} {body_text})")
-    } else {
-        body_text
-    };
-    Some((params, body))
-}
-
-/// Replace every whole-symbol occurrence of `name` with `repl`, skipping
-/// strings, comments and char literals.
-fn substitute_symbol(text: &str, name: &str, repl: &str, d: Dialect) -> String {
-    let b = text.as_bytes();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'"' => {
-                let e = lisp_sitter_core::sexp_reader::skip_string(b, i).unwrap_or(b.len());
-                out.push_str(&text[i..e]);
-                i = e;
-            }
-            b';' => {
-                let e = lisp_sitter_core::sexp_reader::skip_line_comment(b, i).unwrap_or(b.len());
-                out.push_str(&text[i..e]);
-                i = e;
-            }
-            b'#' if i + 1 < b.len() && b[i + 1] == b'|' => {
-                let e = lisp_sitter_core::sexp_reader::skip_block_comment(b, i).unwrap_or(b.len());
-                out.push_str(&text[i..e]);
-                i = e;
-            }
-            b'#' if i + 1 < b.len() && b[i + 1] == b'\\' => {
-                let e = skip_sexp_d(b, i, d);
-                out.push_str(&text[i..e]);
-                i = e;
-            }
-            b'?' if d == Dialect::Elisp => {
-                let e = skip_sexp_d(b, i, d);
-                out.push_str(&text[i..e]);
-                i = e;
-            }
-            b'(' | b')' | b'\'' | b'`' | b',' => {
-                out.push(b[i] as char);
-                i += 1;
-            }
-            c if c.is_ascii_whitespace() => {
-                out.push(c as char);
-                i += 1;
-            }
-            _ => {
-                let s = i;
-                let e = skip_sym(b, i).max(s + 1);
-                let tok = &text[s..e];
-                if tok == name {
-                    out.push_str(repl);
-                } else {
-                    out.push_str(tok);
-                }
-                i = e;
-            }
-        }
-    }
-    out
 }
 
 /// Inline every genuine call site of `sym` in `content` by substituting
@@ -996,65 +679,6 @@ pub fn raise(reg: &Registry, path: &str, sym: &str, pat: &str) -> Result<String,
     Ok(u)
 }
 
-/// Walk `text` byte-by-byte up to `inner_start`, maintaining a paren stack.
-/// Returns the byte range `[start, end)` of the innermost `(...)` that directly
-/// contains the position `inner_start`.  Returns `None` when `inner_start` is
-/// already at the top level (depth 0).
-fn find_enclosing_sexp(text: &str, inner_start: usize, d: Dialect) -> Option<(usize, usize)> {
-    use lisp_sitter_core::sexp_reader::{
-        skip_atom_in, skip_block_comment, skip_line_comment, skip_sexp_in, skip_string,
-    };
-    let b = text.as_bytes();
-    let mut stack: Vec<usize> = Vec::new();
-    let mut i = 0;
-    while i < inner_start {
-        while i < inner_start && i < b.len() && b[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= inner_start || i >= b.len() {
-            break;
-        }
-        match b[i] {
-            b'(' => {
-                stack.push(i);
-                i += 1;
-            }
-            b')' => {
-                stack.pop();
-                i += 1;
-            }
-            b'"' => {
-                i = skip_string(b, i).unwrap_or(b.len());
-            }
-            b';' => {
-                i = skip_line_comment(b, i).unwrap_or(b.len());
-            }
-            b'#' if i + 1 < b.len() && b[i + 1] == b'|' => {
-                i = skip_block_comment(b, i).unwrap_or(b.len());
-            }
-            b'#' if i + 1 < b.len() && b[i + 1] == b';' => {
-                i = skip_sexp_in(b, i + 2, d).unwrap_or(b.len());
-            }
-            b'\'' | b'`' => {
-                i += 1;
-            }
-            b',' => {
-                i += if i + 1 < b.len() && b[i + 1] == b'@' {
-                    2
-                } else {
-                    1
-                };
-            }
-            _ => {
-                i = skip_atom_in(b, i, d).unwrap_or(i + 1);
-            }
-        }
-    }
-    let parent_start = *stack.last()?;
-    let parent_end = skip_sexp_in(b, parent_start, d).ok()?;
-    Some((parent_start, parent_end))
-}
-
 // ── convert-let ────────────────────────────────────────────────
 
 pub fn convert_let(reg: &Registry, path: &str, sym: &str, target: &str) -> Result<String, Error> {
@@ -1099,6 +723,7 @@ mod tests {
     use super::*;
     use crate::default_registry;
     use lisp_sitter_core::edit::replace_node;
+    use lisp_sitter_core::form_scan::skip_sexp;
     use lisp_sitter_core::Error;
 
     fn tmp_file(name: &str, content: &str) -> (std::path::PathBuf, std::path::PathBuf) {
