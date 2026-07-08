@@ -63,6 +63,12 @@ pub fn skip_whitespace_and_comments(bytes: &[u8], mut pos: usize) -> usize {
     pos
 }
 
+/// Maximum s-expression nesting the byte scanner will descend into before
+/// bailing out. Prevents a stack overflow on pathological deeply-nested input
+/// (e.g. a file of 100k `(`), which is reachable from every read/transform tool
+/// and would otherwise abort the whole process. Well above any real source.
+const MAX_SEXP_DEPTH: u32 = 2000;
+
 /// Skip one complete s‑expression starting at `pos` (dialect-agnostic / generic).
 /// Returns the position immediately after it (or an error).
 pub fn skip_sexp(bytes: &[u8], pos: usize) -> ScanResult<usize> {
@@ -71,6 +77,13 @@ pub fn skip_sexp(bytes: &[u8], pos: usize) -> ScanResult<usize> {
 
 /// Skip one complete s‑expression, honoring `dialect`'s char-literal syntax.
 pub fn skip_sexp_in(bytes: &[u8], pos: usize, dialect: Dialect) -> ScanResult<usize> {
+    skip_sexp_depth(bytes, pos, dialect, 0)
+}
+
+fn skip_sexp_depth(bytes: &[u8], pos: usize, dialect: Dialect, depth: u32) -> ScanResult<usize> {
+    if depth > MAX_SEXP_DEPTH {
+        return Err((pos, "maximum nesting depth exceeded"));
+    }
     let mut i = pos;
     if i >= bytes.len() {
         return Err((i, "unexpected end of file"));
@@ -89,15 +102,15 @@ pub fn skip_sexp_in(bytes: &[u8], pos: usize, dialect: Dialect) -> ScanResult<us
                 // #; sexp comment inside the list — skip the next form
                 if i + 1 < bytes.len() && bytes[i] == b'#' && bytes[i + 1] == b';' {
                     i += 2;
-                    i = skip_sexp_in(bytes, i, dialect)?;
+                    i = skip_sexp_depth(bytes, i, dialect, depth + 1)?;
                     continue;
                 }
-                i = skip_sexp_in(bytes, i, dialect)?;
+                i = skip_sexp_depth(bytes, i, dialect, depth + 1)?;
             }
         }
         b'"' => skip_string(bytes, i),
         b';' => skip_line_comment(bytes, i),
-        b'\'' | b'`' => skip_sexp_in(bytes, i + 1, dialect),
+        b'\'' | b'`' => skip_sexp_depth(bytes, i + 1, dialect, depth + 1),
         b',' => {
             // Unquote or unquote-splicing
             let next = if i + 1 < bytes.len() && bytes[i + 1] == b'@' {
@@ -105,18 +118,18 @@ pub fn skip_sexp_in(bytes: &[u8], pos: usize, dialect: Dialect) -> ScanResult<us
             } else {
                 i + 1
             };
-            skip_sexp_in(bytes, next, dialect)
+            skip_sexp_depth(bytes, next, dialect, depth + 1)
         }
         b'#' => {
             if i + 1 < bytes.len() && bytes[i + 1] == b';' {
                 // #; at top level — skip the following sexp
-                skip_sexp_in(bytes, i + 2, dialect)
+                skip_sexp_depth(bytes, i + 2, dialect, depth + 1)
             } else {
-                skip_atom_in(bytes, i, dialect)
+                skip_atom_depth(bytes, i, dialect, depth)
             }
         }
         b')' => Err((i, "unmatched close paren")),
-        _ => skip_atom_in(bytes, i, dialect),
+        _ => skip_atom_depth(bytes, i, dialect, depth),
     }
 }
 
@@ -147,14 +160,24 @@ pub fn skip_line_comment(bytes: &[u8], start: usize) -> ScanResult<usize> {
 
 /// Skip a block comment `#| ... |#` starting at `start` (the `#` of `#|`).
 ///
-/// Nesting is **not** handled (uncommon and complex for a fallback scanner).
+/// Nesting **is** handled: `#| outer #| inner |# still outer |#` is a single
+/// comment, as required by R7RS Scheme and Common Lisp.
 pub fn skip_block_comment(bytes: &[u8], start: usize) -> ScanResult<usize> {
     let mut i = start + 2; // past '#|'
+    let mut depth: u32 = 1;
     while i + 1 < bytes.len() {
-        if bytes[i] == b'|' && bytes[i + 1] == b'#' {
-            return Ok(i + 2);
+        if bytes[i] == b'#' && bytes[i + 1] == b'|' {
+            depth += 1;
+            i += 2;
+        } else if bytes[i] == b'|' && bytes[i + 1] == b'#' {
+            depth -= 1;
+            i += 2;
+            if depth == 0 {
+                return Ok(i);
+            }
+        } else {
+            i += 1;
         }
-        i += 1;
     }
     Err((start, "unterminated block comment"))
 }
@@ -169,6 +192,13 @@ pub fn skip_atom(bytes: &[u8], start: usize) -> ScanResult<usize> {
 
 /// Skip an atom, honoring `dialect`'s character-literal syntax.
 pub fn skip_atom_in(bytes: &[u8], start: usize, dialect: Dialect) -> ScanResult<usize> {
+    skip_atom_depth(bytes, start, dialect, 0)
+}
+
+fn skip_atom_depth(bytes: &[u8], start: usize, dialect: Dialect, depth: u32) -> ScanResult<usize> {
+    if depth > MAX_SEXP_DEPTH {
+        return Err((start, "maximum nesting depth exceeded"));
+    }
     let mut i = start;
     if i >= bytes.len() {
         return Err((i, "unexpected end of file"));
@@ -186,10 +216,10 @@ pub fn skip_atom_in(bytes: &[u8], start: usize, dialect: Dialect) -> ScanResult<
             }
             if i + 1 < bytes.len() && bytes[i] == b'#' && bytes[i + 1] == b';' {
                 i += 2;
-                i = skip_sexp_in(bytes, i, dialect)?;
+                i = skip_sexp_depth(bytes, i, dialect, depth + 1)?;
                 continue;
             }
-            i = skip_sexp_in(bytes, i, dialect)?;
+            i = skip_sexp_depth(bytes, i, dialect, depth + 1)?;
         }
     }
     // #\c character literal (Common Lisp / Scheme): the char after #\ is taken
@@ -234,6 +264,19 @@ pub fn skip_atom_in(bytes: &[u8], start: usize, dialect: Dialect) -> ScanResult<
 /// True if `b` is a Lisp delimiter that ends an atom.
 pub fn is_delim(b: u8) -> bool {
     matches!(b, b'(' | b')' | b'"' | b';')
+}
+
+/// True if a character-literal marker (`?` in elisp, `#\` in CL/Scheme) at
+/// byte `i` begins a *new token* rather than sitting inside a symbol. `?` and
+/// `#` are both valid symbol constituents (`foo?`, `foo#bar`), so a marker that
+/// directly follows an atom character is not a literal. A token starts at the
+/// buffer start or right after whitespace/quote/`(`/`)`/`"`/`;`.
+pub fn at_token_start(bytes: &[u8], i: usize) -> bool {
+    if i == 0 {
+        return true;
+    }
+    let p = bytes[i - 1];
+    p.is_ascii_whitespace() || matches!(p, b'(' | b')' | b'"' | b';' | b'\'' | b'`' | b',' | b'@')
 }
 
 /// Given a possibly-incomplete s-expression, append enough `)` characters to
@@ -290,17 +333,20 @@ pub fn complete_form_in(input: &str, dialect: Dialect) -> Option<String> {
                 }
             }
             // #\c (CL/Scheme) or ?\c / ?c (elisp) char literal — consume as one
-            // atom so an embedded paren isn't counted.
-            b'#' if i + 1 < bytes.len() && bytes[i + 1] == b'\\' => {
+            // atom so an embedded paren isn't counted. Only when the marker
+            // starts a token; `foo?` / `foo#bar` are ordinary symbols.
+            b'#' if i + 1 < bytes.len() && bytes[i + 1] == b'\\' && at_token_start(bytes, i) => {
                 match skip_atom_in(bytes, i, dialect) {
                     Ok(next) => i = next,
                     Err(_) => i += 1,
                 }
             }
-            b'?' if dialect == Dialect::Elisp => match skip_atom_in(bytes, i, dialect) {
-                Ok(next) => i = next,
-                Err(_) => i += 1,
-            },
+            b'?' if dialect == Dialect::Elisp && at_token_start(bytes, i) => {
+                match skip_atom_in(bytes, i, dialect) {
+                    Ok(next) => i = next,
+                    Err(_) => i += 1,
+                }
+            }
             b'\'' | b'`' => i += 1,
             b',' => {
                 if i + 1 < bytes.len() && bytes[i + 1] == b'@' {
@@ -545,5 +591,50 @@ mod tests {
     #[test]
     fn complete_empty_is_balanced() {
         assert_eq!(complete_form("").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn nested_block_comment() {
+        // #| outer #| inner |# still outer |# is one comment (R7RS / CL).
+        let src = b"#| outer #| inner |# still |# (live)";
+        let i = skip_whitespace_and_comments(src, 0);
+        assert_eq!(&src[i..], b"(live)");
+        assert_eq!(skip_sexp(src, i).unwrap(), src.len());
+    }
+
+    #[test]
+    fn nested_block_comment_unterminated() {
+        // Only the outer close is present → still open.
+        assert_eq!(
+            skip_block_comment(b"#| outer #| inner |#", 0)
+                .unwrap_err()
+                .1,
+            "unterminated block comment"
+        );
+    }
+
+    #[test]
+    fn complete_symbol_ending_in_question_not_char_literal() {
+        // `foo?` is a symbol; the `)` after it must not be eaten as `?)`.
+        assert_eq!(
+            complete_form_in("(when (foo?) x", Dialect::Elisp).as_deref(),
+            Some("(when (foo?) x)")
+        );
+    }
+
+    #[test]
+    fn complete_leading_char_literal_still_works() {
+        // `?(` at a token start IS a char literal — its paren must not count.
+        assert_eq!(
+            complete_form_in("(insert ?\\( x", Dialect::Elisp).as_deref(),
+            Some("(insert ?\\( x)")
+        );
+    }
+
+    #[test]
+    fn deeply_nested_does_not_overflow() {
+        let src = "(".repeat(50_000);
+        // Must return an error, not abort the process via stack overflow.
+        assert!(skip_sexp(src.as_bytes(), 0).is_err());
     }
 }

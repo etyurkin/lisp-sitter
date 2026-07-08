@@ -18,13 +18,14 @@ impl Config {
     /// Load config from standard locations (~/.config/lisp-sitter/config.json or ~/.lisp-sitter.json).
     pub fn load() -> Self {
         let candidates = [
+            // An explicit override takes precedence over the home defaults.
+            std::env::var("LISP_SITTER_CONFIG").ok(),
             std::env::var("HOME")
                 .ok()
                 .map(|h| format!("{h}/.config/lisp-sitter/config.json")),
             std::env::var("HOME")
                 .ok()
                 .map(|h| format!("{h}/.lisp-sitter.json")),
-            std::env::var("LISP_SITTER_CONFIG").ok(),
         ];
         for path in candidates.into_iter().flatten() {
             let p = Path::new(&path);

@@ -15,6 +15,8 @@
 
 use crate::sexp_reader::{self, Dialect};
 
+use crate::sexp_reader::at_token_start as marker_at_token_start;
+
 /// Byte length of the UTF-8 character whose leading byte is `b`.
 fn char_len(b: u8) -> usize {
     if b < 0x80 {
@@ -90,6 +92,14 @@ fn format_inner(source: &str, dialect: Dialect, align: bool) -> String {
             out.push('\n');
             col = 0;
             i += 1;
+            // A line comment ends at the newline.
+            in_line_comment = false;
+            // Inside a string or block comment, the leading whitespace of a
+            // continuation line is literal content — copy it verbatim instead
+            // of reindenting (which would corrupt the string / comment text).
+            if in_string || in_block_comment {
+                continue;
+            }
             // Skip leading whitespace on the next line
             while i < bytes.len() && bytes[i].is_ascii_whitespace() && bytes[i] != b'\n' {
                 i += 1;
@@ -215,8 +225,10 @@ fn format_inner(source: &str, dialect: Dialect, align: bool) -> String {
                         && !is_def
                         && !head.is_empty()
                     {
-                        // Anchor = column of the first argument
-                        let anchor = start_of_form + (j - i) as u32;
+                        // Anchor = column of the first argument. Count display
+                        // columns (chars), not bytes, so multi-byte head symbols
+                        // don't skew the alignment.
+                        let anchor = start_of_form + source[i..j].chars().count() as u32;
                         let d = entering_depth as usize;
                         while columns.len() <= d {
                             columns.push(0);
@@ -256,7 +268,10 @@ fn format_inner(source: &str, dialect: Dialect, align: bool) -> String {
             }
             // #\c char literal (CL/Scheme) — copy verbatim; the literal char
             // (which may be `(` or `)`) must not affect depth.
-            b'#' if i + 1 < bytes.len() && bytes[i + 1] == b'\\' => {
+            b'#' if i + 1 < bytes.len()
+                && bytes[i + 1] == b'\\'
+                && marker_at_token_start(bytes, i) =>
+            {
                 out.push_str(&source[i..i + 2]);
                 col += 2;
                 i += 2;
@@ -269,7 +284,8 @@ fn format_inner(source: &str, dialect: Dialect, align: bool) -> String {
                 }
             }
             // ?c / ?\c char literal (elisp) — copy verbatim, don't count parens.
-            b'?' if dialect == Dialect::Elisp => {
+            // Only at a token start; `foo?` is an ordinary symbol.
+            b'?' if dialect == Dialect::Elisp && marker_at_token_start(bytes, i) => {
                 out.push('?');
                 col += 1;
                 i += 1;
@@ -487,5 +503,33 @@ mod tests {
     fn aligned_vector_inside() {
         let src = "(foo\n  #(1 2 3))\n";
         assert_eq!(format_source_aligned(src), src);
+    }
+
+    #[test]
+    fn multiline_string_interior_untouched() {
+        // The whitespace inside the string literal is content, not indentation.
+        let src = "(defvar x \"keep\n        these spaces\")\n";
+        assert_eq!(format_source(src), src);
+    }
+
+    #[test]
+    fn line_comment_does_not_leak_to_next_line() {
+        // A `;` comment ends at its newline; the following form must reindent.
+        let src = "(defun a () ; note\n  1)\n\n(defun b ()\n  2)\n";
+        assert_eq!(format_source(src), src);
+    }
+
+    #[test]
+    fn block_comment_interior_untouched() {
+        let src = "(defun foo ()\n  #| line one\n     line two |#\n  x)\n";
+        assert_eq!(format_source(src), src);
+    }
+
+    #[test]
+    fn elisp_symbol_ending_in_question_reindents() {
+        // `foo?` is a symbol; the `)` after it must decrement depth so the
+        // body indents at 2, not 4.
+        let src = "(when (foo?)\n  x)\n";
+        assert_eq!(format_source_in(src, Dialect::Elisp), src);
     }
 }

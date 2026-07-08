@@ -401,7 +401,10 @@ pub fn diff(
 
     for (rel, lines) in &changed {
         let abs = root.join(rel);
-        let abs_s = canonical_path(abs.to_str().unwrap());
+        let Some(abs_str) = abs.to_str() else {
+            continue; // skip non-UTF-8 paths rather than panicking
+        };
+        let abs_s = canonical_path(abs_str);
         if !path_set.contains(&abs_s) {
             continue;
         }
@@ -452,7 +455,15 @@ pub fn diff(
 }
 
 fn git_changed_files(root: &Path, base: &str) -> Result<Vec<(String, Vec<u32>)>, Error> {
-    let names = run_git(root, &["diff", "--name-only", base])?;
+    // Reject a ref that git would parse as an option (e.g. `--output=…`), which
+    // would otherwise let a caller turn `git diff <ref>` into arbitrary flags.
+    // Valid git refnames never begin with `-`.
+    if base.starts_with('-') {
+        return Err(Error::Message(format!(
+            "invalid diff ref `{base}`: refs must not start with '-'"
+        )));
+    }
+    let names = run_git(root, &["diff", "--name-only", base, "--"])?;
     let mut out = Vec::new();
     for rel in names.lines().filter(|l| !l.trim().is_empty()) {
         if !is_lisp_rel(rel) {

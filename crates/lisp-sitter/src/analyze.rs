@@ -400,6 +400,13 @@ pub fn analyze(reg: &Registry, paths: &[String], opt: Options) -> Result<String,
 
     // ── unused definitions ──────────────────────────────────────────
     if opt.unused {
+        // Parse each file once and collect every referenced symbol name, rather
+        // than re-scanning every file for each candidate definition (which was
+        // O(defs × files) full parses).
+        let referenced: std::collections::HashSet<String> = files
+            .iter()
+            .flat_map(|(_, c, p)| p.referenced_names(c))
+            .collect();
         for (name, records) in &defs {
             let candidate = records.iter().any(|r| r.arity.is_some() || r.is_macro);
             if !candidate {
@@ -409,11 +416,7 @@ pub fn analyze(reg: &Registry, paths: &[String], opt: Options) -> Result<String,
             if records.iter().any(|r| r.is_public) {
                 continue;
             }
-            let total_refs: usize = files
-                .iter()
-                .map(|(_, c, p)| p.find_symbol_refs(c, name).len())
-                .sum();
-            if total_refs == 0 {
+            if !referenced.contains(name) {
                 for r in records {
                     findings.push((
                         r.path.clone(),

@@ -26,6 +26,15 @@ impl LispSitterMcp {
     }
 }
 
+/// Whether the operator has opted into native-evaluator execution via the MCP
+/// `structural_eval` tool. Off unless `LISP_SITTER_ENABLE_EVAL` is `1`/`true`.
+fn eval_enabled() -> bool {
+    matches!(
+        std::env::var("LISP_SITTER_ENABLE_EVAL").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct PathArgs {
     path: String,
@@ -335,7 +344,7 @@ impl LispSitterMcp {
         Parameters(args): Parameters<InsertArgs>,
     ) -> Result<String, String> {
         if args.diff {
-            let c = ops::read_file(&args.path).map_err(|e| e.to_string())?;
+            let c = ops::read_file_or_new(&args.path).map_err(|e| e.to_string())?;
             let p = ops::resolve_plugin(&self.reg, &args.path, None).map_err(|e| e.to_string())?;
             let u = lisp_sitter_core::edit::insert_after(p, &c, &args.after_symbol, &args.node)
                 .map_err(|e| e.to_string())?;
@@ -381,11 +390,22 @@ impl LispSitterMcp {
         tool_result(ops::context(&self.reg, &args.path))
     }
 
-    #[tool(description = "Evaluate a file using the language's native tool (emacs, sbcl, guile).")]
+    #[tool(
+        description = "Evaluate a file using the language's native tool (emacs, sbcl, guile). \
+                       Disabled by default; the operator must set LISP_SITTER_ENABLE_EVAL=1."
+    )]
     async fn structural_eval(
         &self,
         Parameters(args): Parameters<PathArgs>,
     ) -> Result<String, String> {
+        if !eval_enabled() {
+            return Err(
+                "structural_eval is disabled: it runs the file through a native \
+                        interpreter (emacs/sbcl/guile), which is arbitrary code execution. \
+                        Set LISP_SITTER_ENABLE_EVAL=1 in the server environment to allow it."
+                    .into(),
+            );
+        }
         match lisp_sitter::eval::eval_file(&args.path) {
             Ok((s, e, ok)) => {
                 let mut r = String::new();

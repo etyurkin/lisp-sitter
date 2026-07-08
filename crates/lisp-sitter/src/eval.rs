@@ -48,16 +48,17 @@ pub fn eval_file_with(path: &str, runner: &impl Runner) -> Result<(String, Strin
 
 fn find_evaluator(path: &str) -> Result<Command, Error> {
     if path.ends_with(".el") {
-        // Emacs Lisp: byte-compile
+        // Emacs Lisp: byte-compile. Pass the file as a plain argument to
+        // `batch-byte-compile` rather than interpolating it into an `--eval`
+        // string — a path containing `"` or `\` would otherwise break out of
+        // the string literal and inject arbitrary elisp.
         let abs = std::fs::canonicalize(path)
             .map_err(|e| Error::Message(format!("cannot resolve {path}: {e}")))?;
-        let abs_str = abs.to_string_lossy().to_string();
         let mut cmd = Command::new("emacs");
-        cmd.args([
-            "--batch",
-            "--eval",
-            &format!("(byte-compile-file \"{abs_str}\")"),
-        ]);
+        cmd.arg("--batch")
+            .arg("-f")
+            .arg("batch-byte-compile")
+            .arg(&abs);
         Ok(cmd)
     } else if path.ends_with(".lisp") || path.ends_with(".cl") {
         let bin = which("sbcl").or_else(|_| which("ccl")).map_err(|_| {
@@ -261,8 +262,10 @@ mod tests {
         assert_eq!(cmd.get_program(), "emacs");
         let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(args[0], "--batch");
-        assert_eq!(args[1], "--eval");
-        assert!(args[2].contains("test.el"));
+        assert_eq!(args[1], "-f");
+        assert_eq!(args[2], "batch-byte-compile");
+        // The file is a plain argument, never interpolated into elisp.
+        assert!(args[3].contains("test.el"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
