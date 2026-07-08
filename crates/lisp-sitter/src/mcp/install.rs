@@ -52,7 +52,20 @@ fn merge_mcp_file(path: &Path, name: &str, entry: &Value) -> Result<()> {
     let mut root: Value = if path.exists() {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        serde_json::from_str(&text).unwrap_or_else(|_| json!({}))
+        if text.trim().is_empty() {
+            json!({})
+        } else {
+            // Refuse to overwrite a config we can't parse — otherwise a file with
+            // a trailing comma / comment would be silently replaced, destroying
+            // every other MCP server and setting it holds.
+            serde_json::from_str(&text).with_context(|| {
+                format!(
+                    "{} is not valid JSON; refusing to overwrite it. \
+                     Fix the file (or remove it) and re-run.",
+                    path.display()
+                )
+            })?
+        }
     } else {
         json!({})
     };
@@ -173,6 +186,24 @@ mod tests {
         assert_eq!(content["mcpServers"]["srv"]["command"], "/new");
         assert_eq!(content["mcpServers"]["srv"]["type"], "stdio");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_merge_mcp_file_refuses_unparseable_config() {
+        let dir = test_dir("unparseable");
+        let path = dir.join("test-config.json");
+        // Recoverable content but not strict JSON (trailing comma).
+        let original = "{\n  \"mcpServers\": {\"other\": {\"command\": \"x\"}},\n  \"projects\": {\"a\": 1},\n}\n";
+        std::fs::write(&path, original).unwrap();
+        let entry = json!({"command": "/new"});
+        let result = merge_mcp_file(&path, "lisp-sitter", &entry);
+        assert!(result.is_err(), "must refuse to clobber unparseable config");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "file must be left untouched"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

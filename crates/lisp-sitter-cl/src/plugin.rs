@@ -185,6 +185,14 @@ impl LanguagePlugin for CommonLispPlugin {
             .unwrap_or_default()
     }
 
+    fn referenced_names(&self, content: &str) -> std::collections::HashSet<String> {
+        crate::treesit::parse(content)
+            .map(|tree| {
+                lisp_sitter_core::treesit_util::referenced_names_in_tree(content, tree.root_node())
+            })
+            .unwrap_or_default()
+    }
+
     fn find_errors(&self, content: &str) -> Vec<String> {
         crate::treesit::parse(content)
             .map(|tree| lisp_sitter_core::treesit_util::find_error_nodes(content, tree.root_node()))

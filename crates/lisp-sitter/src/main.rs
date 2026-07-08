@@ -357,6 +357,27 @@ fn confirm_or_abort() {
     }
 }
 
+/// Apply the result of a single-file edit, honoring `--confirm` (show a diff and
+/// prompt) and `--write` (persist), or print the transformed text otherwise.
+fn finish_edit(path: &str, updated: &str, write: bool, confirm: bool) -> Result<()> {
+    if confirm {
+        if let Ok(orig) = lisp_sitter::ops::read_file(path) {
+            let d = lisp_sitter::ops::diff_text(&orig, updated, path);
+            if !d.is_empty() {
+                eprint!("{d}");
+            }
+        }
+        confirm_or_abort();
+    }
+    if write {
+        lisp_sitter::ops::atomic_write(path, updated)?;
+        println!("Wrote {path}");
+    } else {
+        print!("{updated}");
+    }
+    Ok(())
+}
+
 fn read_text(inline: Option<String>, file: Option<String>) -> Result<String> {
     match (inline, file) {
         (Some(t), None) => Ok(t),
@@ -450,7 +471,7 @@ async fn run(cli: Cli) -> Result<()> {
             diff,
         } => {
             let n = read_text(node, node_file)?;
-            let content = lisp_sitter::ops::read_file(&path)?;
+            let content = lisp_sitter::ops::read_file_or_new(&path)?;
             let u = lisp_sitter_core::edit::insert_after(
                 lisp_sitter::ops::resolve_plugin(&reg, &path, None)?,
                 &content,
@@ -550,6 +571,14 @@ async fn run(cli: Cli) -> Result<()> {
                 let changed =
                     lisp_sitter::transform::rename_project(&reg, &paths, &old, &new, ref_mode)?;
                 if write {
+                    if cf {
+                        for (p, c) in &changed {
+                            if let Ok(orig) = lisp_sitter::ops::read_file(p) {
+                                eprint!("{}", lisp_sitter::ops::diff_text(&orig, c, p));
+                            }
+                        }
+                        confirm_or_abort();
+                    }
                     for (p, c) in &changed {
                         lisp_sitter::ops::atomic_write(p, c)?;
                     }
@@ -596,15 +625,15 @@ async fn run(cli: Cli) -> Result<()> {
             condition,
             write,
         } => {
-            commands::wrap(
-                &reg,
-                &path,
-                &symbol,
-                &r#in,
-                bindings.as_deref(),
-                condition.as_deref(),
-                write,
-            )?;
+            let mut xs: Vec<(&str, &str)> = Vec::new();
+            if let Some(ref b) = bindings {
+                xs.push(("bindings", b));
+            }
+            if let Some(ref c) = condition {
+                xs.push(("condition", c));
+            }
+            let u = lisp_sitter::transform::wrap_body(&reg, &path, &symbol, &r#in, &xs)?;
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::Remove {
             path,
@@ -613,12 +642,7 @@ async fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let u = lisp_sitter::transform::remove_form(&reg, &path, &symbol, keep_calls)?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::Move {
             path,
@@ -627,12 +651,7 @@ async fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let u = lisp_sitter::transform::move_form(&reg, &path, &symbol, &after)?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::Substitute {
             path,
@@ -643,12 +662,7 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let u =
                 lisp_sitter::transform::substitute(&reg, &path, &symbol, &pattern, &replacement)?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::Extract {
             path,
@@ -665,12 +679,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .filter(|s| !s.is_empty())
                 .collect();
             let u = lisp_sitter::transform::extract(&reg, &path, &symbol, &pattern, &name, &p)?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::Callers { path, symbol } => {
             if j {
@@ -746,12 +755,7 @@ async fn run(cli: Cli) -> Result<()> {
                 at.as_deref(),
                 wrap.as_deref(),
             )?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::Flatten {
             path,
@@ -759,12 +763,7 @@ async fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let u = lisp_sitter::transform::flatten(&reg, &path, &symbol)?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::ConvertLet {
             path,
@@ -773,12 +772,7 @@ async fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let u = lisp_sitter::transform::convert_let(&reg, &path, &symbol, &to)?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::FindErrors { path } => {
             println!("{}", lisp_sitter::ops::find_errors(&reg, &path)?);
@@ -793,12 +787,7 @@ async fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let u = lisp_sitter::transform::splice(&reg, &path, &symbol, &pattern)?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::Raise {
             path,
@@ -807,12 +796,7 @@ async fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let u = lisp_sitter::transform::raise(&reg, &path, &symbol, &pattern)?;
-            if write {
-                lisp_sitter::ops::atomic_write(&path, &u)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{u}");
-            }
+            finish_edit(&path, &u, write, cf)?;
         }
         Command::Analyze {
             path,

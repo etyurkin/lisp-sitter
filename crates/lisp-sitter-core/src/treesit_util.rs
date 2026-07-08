@@ -191,56 +191,40 @@ fn form_label(content: &str, node: tree_sitter::Node) -> Option<String> {
 /// Check if a form has a docstring — a string literal right after the arglist
 /// (for defun/define/defclass) or as the third argument (for defvar/defcustom).
 ///
-/// The scanner watches for:
-/// - A `)` at depth 2 → that closes the arglist → `found_after_args = true`.
-/// - A `)` at depth 1 on a non‑empty inner list → also marks it.
-/// - Then the next `"` signals the docstring.
+/// Works by isolating the direct child elements of the outer list and checking
+/// whether a string literal sits in a documentation position. Strings, comments
+/// and char literals are skipped via the shared scanner, so parens inside them
+/// can't corrupt the element count, and a string deeper in the body (e.g.
+/// `(message "hi")`) is never mistaken for a docstring.
 pub fn has_docstring(form_text: &str) -> bool {
-    let mut depth = 0i32;
-    let mut found_after_args = false;
+    use crate::sexp_reader::{skip_sexp_in, skip_whitespace_and_comments, Dialect};
     let bytes = form_text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                // depth==2: closing the arglist (defun f (x) "…")
-                // The outer `)` of the defun is at depth==1 and is ignored.
-                if depth == 2 {
-                    found_after_args = true;
-                }
-                depth -= 1;
-                i += 1;
-            }
-            b'"' if found_after_args => {
-                // Found a string literal right after the arglist — that's the docstring.
-                return true;
-            }
-            b';' => {
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'#' if i + 1 < bytes.len() && bytes[i + 1] == b'|' => {
-                while i + 1 < bytes.len() && !(bytes[i] == b'|' && bytes[i + 1] == b'#') {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 2;
-                }
-            }
-            _ => {
-                i += 1;
-            }
+    let Some(open) = bytes.iter().position(|&c| c == b'(') else {
+        return false;
+    };
+    let mut i = open + 1;
+    let mut index = 0usize;
+    loop {
+        i = skip_whitespace_and_comments(bytes, i);
+        if i >= bytes.len() || bytes[i] == b')' {
+            return false;
         }
-        if depth < 0 {
-            break;
+        let first = bytes[i];
+        let end = match skip_sexp_in(bytes, i, Dialect::Generic) {
+            Ok(e) if e > i => e,
+            _ => return false,
+        };
+        // Element 0 = def keyword, 1 = name. A docstring occupies element 2
+        // (value-less defvar) or 3 (defun body / defvar with a value).
+        if (index == 2 || index == 3) && first == b'"' {
+            return true;
         }
+        if index >= 3 {
+            return false;
+        }
+        index += 1;
+        i = end;
     }
-    false
 }
 
 pub fn pos_label(content: &str, start: usize, label: &str) -> String {
@@ -522,6 +506,37 @@ pub fn find_symbol_refs_in_tree(content: &str, root: Node, symbol: &str) -> Vec<
     out
 }
 
+/// Collect the names of every symbol that is a syntactic reference (call head,
+/// `#'sym`, or `'sym`) anywhere in the tree — the union of what
+/// [`find_symbol_refs_in_tree`] would return for each distinct symbol, in a
+/// single walk. Used by project analysis to decide which definitions are unused
+/// without re-parsing each file once per candidate name.
+pub fn referenced_names_in_tree(content: &str, root: Node) -> std::collections::HashSet<String> {
+    let b = content.as_bytes();
+    let mut out = std::collections::HashSet::new();
+    collect_ref_names(b, root, &mut out);
+    out
+}
+
+fn collect_ref_names(b: &[u8], node: Node, out: &mut std::collections::HashSet<String>) {
+    let kind = node.kind();
+    if kind.contains("string") || kind.contains("comment") {
+        return;
+    }
+    if matches!(kind, "symbol" | "sym_lit" | "symbol_lit") {
+        if classify_ref(b, node).is_some() {
+            if let Ok(name) = std::str::from_utf8(&b[node.start_byte()..node.end_byte()]) {
+                out.insert(name.to_string());
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_ref_names(b, child, out);
+    }
+}
+
 fn collect_refs(b: &[u8], node: Node, sym: &[u8], out: &mut Vec<SymbolRef>) {
     let kind = node.kind();
 
@@ -654,4 +669,42 @@ pub fn outline_lines(content: &str, forms: &[crate::FormInfo]) -> crate::Result<
         .map(|f| crate::position::pos_label(content, f.start, &f.label))
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+#[cfg(test)]
+mod docstring_tests {
+    use super::has_docstring;
+
+    #[test]
+    fn defvar_with_value_and_doc() {
+        assert!(has_docstring(
+            "(defvar my-var 1 \"A documented variable.\")"
+        ));
+    }
+
+    #[test]
+    fn defvar_value_only_is_undocumented() {
+        assert!(!has_docstring("(defvar my-var 1)"));
+    }
+
+    #[test]
+    fn defun_with_doc() {
+        assert!(has_docstring("(defun f (x) \"doc\" (* x x))"));
+    }
+
+    #[test]
+    fn defun_body_string_is_not_a_docstring() {
+        assert!(!has_docstring("(defun f () (message \"hi\"))"));
+    }
+
+    #[test]
+    fn defun_undocumented() {
+        assert!(!has_docstring("(defun f (x) (* x x))"));
+    }
+
+    #[test]
+    fn paren_inside_pre_arglist_string_does_not_corrupt() {
+        // The `(` inside the value string must not shift element counting.
+        assert!(has_docstring("(defvar x \"(\" \"real doc\")"));
+    }
 }

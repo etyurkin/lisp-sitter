@@ -39,6 +39,10 @@ impl LanguagePlugin for ElispPlugin {
         &[".el"]
     }
 
+    fn dialect(&self) -> lisp_sitter_core::Dialect {
+        lisp_sitter_core::Dialect::Elisp
+    }
+
     fn top_level_forms(&self, content: &str) -> Result<Vec<FormInfo>> {
         Ok(top_level_forms(content, &self.definers))
     }
@@ -52,7 +56,9 @@ impl LanguagePlugin for ElispPlugin {
     }
 
     fn check_node(&self, node: &str) -> Result<()> {
-        let wrapped = format!("(progn {})", node.trim());
+        // Newline before the closing paren so a trailing line comment inside
+        // `node` (e.g. `(foo) ; note`) doesn't swallow it.
+        let wrapped = format!("(progn {}\n)", node.trim());
         validate_content(&wrapped)
     }
 
@@ -184,6 +190,14 @@ impl LanguagePlugin for ElispPlugin {
                     tree.root_node(),
                     symbol,
                 )
+            })
+            .unwrap_or_default()
+    }
+
+    fn referenced_names(&self, content: &str) -> std::collections::HashSet<String> {
+        crate::treesit::parse(content)
+            .map(|tree| {
+                lisp_sitter_core::treesit_util::referenced_names_in_tree(content, tree.root_node())
             })
             .unwrap_or_default()
     }
@@ -470,6 +484,11 @@ mod tests {
         let updated =
             insert_after(&ElispPlugin::new(), content, "__end__", "(provide 'x)").unwrap();
         assert!(updated.contains("provide"));
+    }
+
+    #[test]
+    fn check_node_with_trailing_line_comment() {
+        assert!(ElispPlugin::new().check_node("(foo) ; trailing").is_ok());
     }
 
     #[test]

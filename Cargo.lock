@@ -509,10 +509,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tree-sitter",
- "tree-sitter-commonlisp",
- "tree-sitter-elisp",
- "tree-sitter-scheme",
 ]
 
 [[package]]

@@ -55,32 +55,6 @@ pub fn check_semantic(reg: &Registry, path: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn wrap(
-    reg: &Registry,
-    path: &str,
-    sym: &str,
-    wrapper: &str,
-    bindings: Option<&str>,
-    cond: Option<&str>,
-    write: bool,
-) -> Result<()> {
-    let mut xs: Vec<(&str, &str)> = Vec::new();
-    if let Some(b) = bindings {
-        xs.push(("bindings", b));
-    }
-    if let Some(c) = cond {
-        xs.push(("condition", c));
-    }
-    let u = lisp_sitter::transform::wrap_body(reg, path, sym, wrapper, &xs)?;
-    if write {
-        ops::atomic_write(path, &u)?;
-        println!("Wrote {path}");
-    } else {
-        print!("{u}");
-    }
-    Ok(())
-}
-
 pub fn init_git_hook() -> Result<()> {
     let hook_path = std::path::Path::new(".git/hooks/pre-commit");
     if !hook_path.parent().map(|p| p.exists()).unwrap_or(false) {
@@ -133,18 +107,11 @@ mod tests {
         let content = "(defun foo ()\n  (+ 1 2))\n";
         ops::atomic_write(path.to_str().unwrap(), content).unwrap();
 
-        // wrap in progn (no write, just check output)
-        wrap(
-            &reg,
-            path.to_str().unwrap(),
-            "foo",
-            "progn",
-            None,
-            None,
-            false,
-        )
-        .unwrap();
-        // no write flag was set, content unchanged
+        let out =
+            lisp_sitter::transform::wrap_body(&reg, path.to_str().unwrap(), "foo", "progn", &[])
+                .unwrap();
+        assert!(out.contains("(progn"));
+        // wrap_body does not touch the file
         assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
         let _ = std::fs::remove_dir_all(&dir);
     }

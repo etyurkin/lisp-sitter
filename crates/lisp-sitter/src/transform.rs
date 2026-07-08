@@ -9,26 +9,18 @@ fn ops_read(path: &str) -> Result<String, Error> {
     crate::ops::read_source(path, false)
 }
 
-/// Char-literal flavor for a plugin (elisp uses `?\(`; CL/Scheme use `#\(`).
-fn dialect_of(p: &dyn LanguagePlugin) -> Dialect {
-    if p.id() == "elisp" {
-        Dialect::Elisp
-    } else {
-        Dialect::Generic
-    }
-}
-
+// Whitespace and the `(`/`)` delimiters are all ASCII, so these scanners test
+// bytes directly. `is_ascii_whitespace()` is false for any UTF-8 continuation
+// or lead byte, so a multi-byte symbol (e.g. `xà`) is never split mid-character
+// — the returned index always lands on a char boundary.
 fn skip_sp(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
     }
     i
 }
 fn skip_sym(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len()
-        && !(bytes[i] as char).is_whitespace()
-        && bytes[i] != b'('
-        && bytes[i] != b')'
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'(' && bytes[i] != b')'
     {
         i += 1;
     }
@@ -413,7 +405,7 @@ pub fn substitute(
     let c = ops_read(path)?;
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     let ft = get_form_text(p, &c, sym)?;
-    let (s, e) = find_sexp(p, ft, pat, dialect_of(p))
+    let (s, e) = find_sexp(p, ft, pat, p.dialect())
         .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
     let nf = format!("{}{}{}", &ft[..s], rep, &ft[e..]);
     let u = replace_node(p, &c, sym, &nf)?;
@@ -440,7 +432,7 @@ pub fn extract(
     let c = ops_read(path)?;
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     let ft = get_form_text(p, &c, sym)?;
-    let (s, e) = find_sexp(p, ft, pat, dialect_of(p))
+    let (s, e) = find_sexp(p, ft, pat, p.dialect())
         .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
     let ex = &ft[s..e];
     let fv = if params.is_empty() {
@@ -558,6 +550,22 @@ pub fn wrap_body(
     replace_node(p, &c, sym, &nf)
 }
 
+/// Count the top-level forms in `body` using the shared scanner.
+fn count_forms(body: &str) -> usize {
+    let b = body.as_bytes();
+    let mut i = skip_sp(b, 0);
+    let mut count = 0;
+    while i < b.len() {
+        let n = skip_sexp(b, i);
+        if n <= i {
+            break;
+        }
+        count += 1;
+        i = skip_sp(b, n);
+    }
+    count
+}
+
 fn make_wrapper(w: &str, a: &[(&str, &str)], body: &str) -> Result<String, Error> {
     let b = body.trim();
     match w {
@@ -576,7 +584,15 @@ fn make_wrapper(w: &str, a: &[(&str, &str)], body: &str) -> Result<String, Error
                 .find(|(k, _)| *k == "condition")
                 .map(|(_, v)| *v)
                 .unwrap_or("t");
-            Ok(format!("(if {cond}\n    {}\n  nil)", b))
+            // `if` has fixed arity: the 2nd arg is the whole `then` branch.
+            // If the body is more than one form, group it in a `progn` so the
+            // extra forms don't silently become `else`/subsequent arguments.
+            let then = if count_forms(b) > 1 {
+                format!("(progn {b})")
+            } else {
+                b.to_string()
+            };
+            Ok(format!("(if {cond}\n    {}\n  nil)", then))
         }
         o => Err(Error::Message(format!("unknown wrapper: {o}"))),
     }
@@ -600,11 +616,11 @@ pub fn instrument(
         format!(
             "{}{}{}",
             &ft[..b.0],
-            instr_body(&ft[b.0..b.1], tf),
+            instr_body(&ft[b.0..b.1], tf, p.dialect())?,
             &ft[b.1..]
         )
     } else if let (Some(pat), Some(wrp)) = (at, wrap) {
-        let (s, e) = find_sexp(p, ft, pat, dialect_of(p))
+        let (s, e) = find_sexp(p, ft, pat, p.dialect())
             .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
         format!("{}{}{}", &ft[..s], &wrp.replace("<form>", pat), &ft[e..])
     } else {
@@ -621,7 +637,7 @@ pub fn instrument(
     Ok(u)
 }
 
-fn instr_body(body: &str, trace: &str) -> String {
+fn instr_body(body: &str, trace: &str, d: Dialect) -> Result<String, Error> {
     let b = body.as_bytes();
     let mut out = String::new();
     let mut i = 0;
@@ -633,9 +649,14 @@ fn instr_body(body: &str, trace: &str) -> String {
         if i >= b.len() {
             break;
         }
-        let n = skip_sexp(b, i);
+        let n = skip_sexp_d(b, i, d);
         if n <= i {
-            break;
+            // The scanner couldn't advance over the remaining content (e.g. a
+            // char literal the generic scanner mishandled). Fail loudly instead
+            // of silently discarding the rest of the function body.
+            return Err(Error::Message(
+                "could not parse function body for instrumentation".into(),
+            ));
         }
         let f = body[i..n].trim();
         if !f.is_empty() {
@@ -647,7 +668,7 @@ fn instr_body(body: &str, trace: &str) -> String {
         }
         i = n;
     }
-    out
+    Ok(out)
 }
 
 // ── flatten ────────────────────────────────────────────────────
@@ -895,7 +916,7 @@ pub fn flatten(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
     let c = ops_read(path)?;
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     ensure_source_editable(p, &c)?;
-    let d = dialect_of(p);
+    let d = p.dialect();
     let ft = get_form_text(p, &c, sym)?.to_string();
 
     let (params, body) = def_params_and_body(p, &ft, d).ok_or_else(|| {
@@ -956,7 +977,7 @@ pub fn splice(reg: &Registry, path: &str, sym: &str, pat: &str) -> Result<String
     let c = ops_read(path)?;
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     let ft = get_form_text(p, &c, sym)?;
-    let d = dialect_of(p);
+    let d = p.dialect();
     let (s, e) = find_sexp(p, ft, pat, d)
         .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
     let b = ft.as_bytes();
@@ -998,7 +1019,7 @@ pub fn raise(reg: &Registry, path: &str, sym: &str, pat: &str) -> Result<String,
     let c = ops_read(path)?;
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     let ft = get_form_text(p, &c, sym)?;
-    let d = dialect_of(p);
+    let d = p.dialect();
     let (s, e) = find_sexp(p, ft, pat, d)
         .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
     let (ps, pe) = find_enclosing_sexp(ft, s, d)
@@ -1080,22 +1101,36 @@ fn find_enclosing_sexp(text: &str, inner_start: usize, d: Dialect) -> Option<(us
 pub fn convert_let(reg: &Registry, path: &str, sym: &str, target: &str) -> Result<String, Error> {
     let c = ops_read(path)?;
     let p = crate::ops::resolve_plugin(reg, path, None)?;
+    let (from, to) = match target {
+        "let*" => ("let", "let*"),
+        "let" => ("let*", "let"),
+        other => {
+            return Err(Error::Message(format!(
+                "invalid conversion target `{other}`: expected `let` or `let*`"
+            )))
+        }
+    };
     let ft = get_form_text(p, &c, sym)?;
-    let (from_space, from_nl, to) = if target == "let*" {
-        ("(let ", "(let\n", "(let* ")
-    } else {
-        ("(let* ", "(let*\n", "(let ")
-    };
-    let nf = if ft.contains(from_space) {
-        ft.replacen(from_space, to, 1)
-    } else if ft.contains(from_nl) {
-        ft.replacen(from_nl, &format!("{}\n", to.trim_end()), 1)
-    } else {
-        return Err(Error::Message(format!(
-            "form `{sym}` does not contain `{}`; cannot convert to {target}",
-            from_space.trim()
-        )));
-    };
+    // Find the first *syntactic* `(from …)` binding form via the byte scanner,
+    // which skips strings and comments — instead of a blind text match that
+    // would rewrite a `let` mentioned in a docstring and miss the real form.
+    // (`find_symbol_refs` can't be used: tree-sitter classifies `let` as a
+    // special form, not a call head, so it returns nothing here.)
+    let form_start = lisp_sitter_core::edit::find_callers_in(ft, from, p.dialect())
+        .into_iter()
+        .min()
+        .ok_or_else(|| {
+            Error::Message(format!(
+                "form `{sym}` contains no `{from}` binding form; cannot convert to {target}"
+            ))
+        })?;
+    let b = ft.as_bytes();
+    let mut head = form_start + 1;
+    while head < b.len() && b[head].is_ascii_whitespace() {
+        head += 1;
+    }
+    let mut nf = ft.to_string();
+    nf.replace_range(head..head + from.len(), to);
     let u = replace_node(p, &c, sym, &nf)?;
     p.check_file(&u).map_err(|e| match e {
         Error::Syntax(d) => Error::SyntaxAfterEdit {
@@ -1514,6 +1549,85 @@ mod tests {
         let result = convert_let(&reg, path.to_str().unwrap(), "foo", "let").unwrap();
         assert!(result.contains("(let "));
         assert!(!result.contains("(let*"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_convert_let_ignores_docstring_mention() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file(
+            "conv_let_doc",
+            "(defun foo ()\n  \"uses (let x) style\"\n  (let ((a 1) (b a)) (+ a b)))\n",
+        );
+        let result = convert_let(&reg, path.to_str().unwrap(), "foo", "let*").unwrap();
+        // The docstring is untouched; the real `let` became `let*`.
+        assert!(result.contains("\"uses (let x) style\""));
+        assert!(result.contains("(let* ((a 1)"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_convert_let_rejects_invalid_target() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file("conv_let_bad", "(defun foo ()\n  (let* ((x 1)) x))\n");
+        assert!(convert_let(&reg, path.to_str().unwrap(), "foo", "letrec").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_extract_non_ascii_symbol_no_panic() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file("extract_utf8", "(defun my-func (xà) (* xà xà))\n");
+        // Must not panic on the multi-byte symbol.
+        let r = extract(
+            &reg,
+            path.to_str().unwrap(),
+            "my-func",
+            "(* xà xà)",
+            "sq",
+            &[],
+        );
+        assert!(r.is_ok() || r.is_err(), "call completed without panicking");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_instrument_elisp_char_literal_preserves_body() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file("instr_char", "(defun ch () (insert ?\\() (other))\n");
+        let r = instrument(
+            &reg,
+            path.to_str().unwrap(),
+            "ch",
+            Some("(message \"t\")"),
+            None,
+            None,
+        )
+        .unwrap();
+        // The body (insert ?\() and (other) must survive, wrapped in progn.
+        assert!(r.contains("insert ?\\("), "body form dropped: {r}");
+        assert!(r.contains("other"), "trailing form dropped: {r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_wrap_if_multiform_body_grouped() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file("wrap_if_multi", "(defun mf ()\n  (do-a)\n  (do-b))\n");
+        let r = wrap_body(
+            &reg,
+            path.to_str().unwrap(),
+            "mf",
+            "if",
+            &[("condition", "(flag)")],
+        )
+        .unwrap();
+        // Both body forms belong to the then-branch (grouped in progn), not
+        // split into then/else.
+        assert!(
+            r.contains("(progn"),
+            "multi-form then should be grouped: {r}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

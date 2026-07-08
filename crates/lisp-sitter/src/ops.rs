@@ -123,7 +123,7 @@ pub fn replace(reg: &Registry, path: &str, sym: &str, body: &str) -> Result<Stri
 }
 
 pub fn insert(reg: &Registry, path: &str, after: &str, node: &str) -> Result<String, Error> {
-    let c = read_file(path)?;
+    let c = read_file_or_new(path)?;
     let u = insert_after(resolve_plugin(reg, path, None)?, &c, after, node)?;
     atomic_write(path, &u)?;
     Ok(format!("Wrote {path}"))
@@ -221,6 +221,73 @@ pub fn fmt_write(reg: &Registry, path: &str) -> Result<String, Error> {
     Ok(format!("Wrote {path}"))
 }
 
+/// The confinement root, if `LISP_SITTER_ROOT` is set. When present, every file
+/// read/written through ops must resolve to a path inside it — this lets an
+/// operator sandbox the MCP server so a tool call can't reach `~/.ssh` or
+/// `/etc`. Unset means no confinement (the historical default).
+fn confine_root() -> Option<std::path::PathBuf> {
+    static ROOT: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        std::env::var_os("LISP_SITTER_ROOT").map(|v| {
+            let p = std::path::PathBuf::from(v);
+            std::fs::canonicalize(&p).unwrap_or(p)
+        })
+    })
+    .clone()
+}
+
+/// Resolve `p` to an absolute, symlink-free path for confinement checks,
+/// tolerating a not-yet-existing target by canonicalizing its nearest existing
+/// ancestor and lexically re-appending the remainder.
+fn resolve_for_confinement(p: &Path) -> std::path::PathBuf {
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = p.to_path_buf();
+    loop {
+        if let Ok(c) = std::fs::canonicalize(&cur) {
+            let mut r = c;
+            for comp in tail.iter().rev() {
+                if comp == ".." {
+                    r.pop();
+                } else if comp != "." {
+                    r.push(comp);
+                }
+            }
+            return r;
+        }
+        match cur.file_name() {
+            Some(name) => tail.push(name.to_os_string()),
+            None => break,
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(p)
+    }
+}
+
+/// Enforce the confinement root (if any). `"-"` (stdin/stdout) is always allowed.
+fn check_confined(path: &str) -> Result<(), Error> {
+    if path == "-" {
+        return Ok(());
+    }
+    let Some(root) = confine_root() else {
+        return Ok(());
+    };
+    let resolved = resolve_for_confinement(Path::new(path));
+    if resolved.starts_with(&root) {
+        Ok(())
+    } else {
+        Err(Error::Message(format!(
+            "path `{path}` is outside the confined root `{}`",
+            root.display()
+        )))
+    }
+}
+
 /// Read a source file. When `path` is `"-"`, read from stdin.
 /// When the file is missing: if `allow_missing` is set and the path has a known
 /// Lisp extension, return an empty string (so `insert`/`replace` can create new
@@ -233,6 +300,7 @@ pub fn read_source(path: &str, allow_missing: bool) -> Result<String, Error> {
             .map_err(|e| Error::Message(format!("stdin: {e}")))?;
         return Ok(buf);
     }
+    check_confined(path)?;
     let p = Path::new(path);
     if p.exists() {
         std::fs::read_to_string(p).map_err(|e| Error::Message(format!("read {path}: {e}")))
@@ -243,7 +311,16 @@ pub fn read_source(path: &str, allow_missing: bool) -> Result<String, Error> {
     }
 }
 
+/// Read for read-only / analysis / edit-existing operations. A missing file is
+/// an error — `check`/`tree`/`analyze` on a nonexistent path must not silently
+/// report success on empty content.
 pub fn read_file(path: &str) -> Result<String, Error> {
+    read_source(path, false)
+}
+
+/// Read for operations that may create a new file (`insert`). A missing path
+/// with a known Lisp extension yields empty content instead of an error.
+pub fn read_file_or_new(path: &str) -> Result<String, Error> {
     read_source(path, true)
 }
 
@@ -253,6 +330,7 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), Error> {
             "cannot --write when reading from stdin".into(),
         ));
     }
+    check_confined(path)?;
     let p = Path::new(path);
     if let Some(parent) = p.parent() {
         if !parent.as_os_str().is_empty() {
@@ -263,10 +341,7 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), Error> {
     if p.exists() {
         if let Ok(old) = std::fs::read_to_string(p) {
             if old != content {
-                let safe = p.to_string_lossy().replace(['/', ':'], "_");
-                let bak_dir = std::env::temp_dir().join("lisp-sitter-backups");
-                let _ = std::fs::create_dir_all(&bak_dir);
-                let _ = std::fs::write(bak_dir.join(format!("{}.bak", safe)), &old);
+                write_backup(p, &old);
             }
         }
     }
@@ -282,6 +357,43 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), Error> {
     std::fs::rename(&tmp, p).map_err(|e| Error::Message(format!("rename {}: {e}", p.display())))?;
     Ok(())
 }
+
+/// Save the pre-edit contents of `p` to a per-user backup directory. The
+/// directory and file are created with owner-only permissions so source
+/// contents (which may include secrets) aren't readable by other local users
+/// on a shared machine.
+fn write_backup(p: &Path, old: &str) {
+    let safe = p.to_string_lossy().replace(['/', ':'], "_");
+    let uid = backup_owner_tag();
+    let bak_dir = std::env::temp_dir().join(format!("lisp-sitter-backups-{uid}"));
+    if std::fs::create_dir_all(&bak_dir).is_err() {
+        return;
+    }
+    restrict_permissions(&bak_dir, 0o700);
+    let file = bak_dir.join(format!("{safe}.bak"));
+    if std::fs::write(&file, old).is_ok() {
+        restrict_permissions(&file, 0o600);
+    }
+}
+
+/// A per-user tag for the backup directory name, so two users on a shared host
+/// don't collide on one directory. The 0700 permissions are the real access
+/// control; this only avoids name clashes.
+fn backup_owner_tag() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .map(|u| u.replace(|c: char| !c.is_ascii_alphanumeric(), "_"))
+        .unwrap_or_else(|_| "user".to_string())
+}
+
+#[cfg(unix)]
+fn restrict_permissions(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path, _mode: u32) {}
 
 pub fn callers(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
     let c = read_file(path)?;
@@ -320,7 +432,9 @@ fn is_lisp_ext(path: &str) -> bool {
 /// Expand a path argument into a concrete list of files.
 ///
 /// - A directory is walked recursively, keeping only Lisp files.
-/// - A glob (`*`/`?`) is matched against file names in its parent directory.
+/// - A glob is matched segment-by-segment with shell semantics: `*`/`?` match
+///   within a single path component (they do not cross `/`), and `**` matches
+///   any number of intervening directories (`src/**/*.el`).
 /// - Anything else is returned verbatim as a single-element list.
 pub fn expand_paths(path: &str) -> Vec<String> {
     if Path::new(path).is_dir() {
@@ -331,40 +445,102 @@ pub fn expand_paths(path: &str) -> Vec<String> {
         r.sort();
         r
     } else if path.contains('*') || path.contains('?') {
-        let (dir, pat) = match path.rfind('/') {
-            Some(i) => (&path[..i], &path[i + 1..]),
-            None => (".", path),
-        };
-        let mut r: Vec<String> = walkdir_paths(dir)
-            .into_iter()
-            .filter(|f| {
-                let name = Path::new(f)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                glob_match(pat, &name) && is_lisp_ext(f)
-            })
-            .collect();
+        let mut r = glob_expand(path);
+        r.retain(|f| is_lisp_ext(f));
         r.sort();
+        r.dedup();
         r
     } else {
         vec![path.to_string()]
     }
 }
 
-fn glob_match(pat: &str, name: &str) -> bool {
-    if pat == "*" || pat == "*.*" {
-        return true;
-    }
-    if !pat.contains('*') {
-        return pat == name;
-    }
-    let parts: Vec<&str> = pat.split('*').collect();
-    if parts.len() == 2 {
-        name.starts_with(parts[0]) && name.ends_with(parts[1])
+/// Expand a wildcard `pattern` into matching file paths using segment-based
+/// matching. `**` matches zero or more directory levels; `*`/`?` stay within
+/// one component.
+fn glob_expand(pattern: &str) -> Vec<String> {
+    let is_abs = pattern.starts_with('/');
+    let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let start = if is_abs {
+        std::path::PathBuf::from("/")
     } else {
-        parts.iter().all(|s| name.contains(s))
+        std::path::PathBuf::from(".")
+    };
+    let mut out = Vec::new();
+    glob_walk(&start, &segments, &mut out);
+    out
+}
+
+fn glob_walk(dir: &Path, segments: &[&str], out: &mut Vec<String>) {
+    let Some((seg, rest)) = segments.split_first() else {
+        return;
+    };
+    if *seg == "**" {
+        // `**` matches zero directories (continue here) or one-plus (recurse,
+        // keeping `**` so it can match further levels).
+        glob_walk(dir, rest, out);
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    glob_walk(&p, segments, out);
+                }
+            }
+        }
+        return;
     }
+    let is_last = rest.is_empty();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !glob_match(seg, &name) {
+            continue;
+        }
+        let p = e.path();
+        if is_last {
+            if p.is_file() {
+                out.push(clean_path(&p));
+            }
+        } else if p.is_dir() {
+            glob_walk(&p, rest, out);
+        }
+    }
+}
+
+/// Stringify a path, stripping the synthetic `./` prefix from relative walks.
+fn clean_path(p: &Path) -> String {
+    let s = p.to_string_lossy().to_string();
+    s.strip_prefix("./").map(str::to_string).unwrap_or(s)
+}
+
+/// Match a single path component against a glob segment containing `*` and `?`.
+fn glob_match(pat: &str, name: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let (mut pi, mut ni) = (0usize, 0usize);
+    let (mut star_pi, mut star_ni): (Option<usize>, usize) = (None, 0);
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star_pi = Some(pi);
+            star_ni = ni;
+            pi += 1;
+        } else if let Some(sp) = star_pi {
+            pi = sp + 1;
+            star_ni += 1;
+            ni = star_ni;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 fn walkdir_paths(path: &str) -> Vec<String> {
@@ -556,9 +732,43 @@ mod tests {
     fn test_read_file_new_lisp_file() {
         let dir = test_dir("read_file_new");
         let path = dir.join("test.el");
-        assert_eq!(read_file(path.to_str().unwrap()).unwrap(), "");
+        // Create-new read yields empty for a missing lisp path...
+        assert_eq!(read_file_or_new(path.to_str().unwrap()).unwrap(), "");
+        // ...but a strict read errors so check/tree/analyze don't report OK.
+        assert!(read_file(path.to_str().unwrap()).is_err());
         let txt = dir.join("foo.txt");
-        assert!(read_file(txt.to_str().unwrap()).is_err());
+        assert!(read_file_or_new(txt.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_check_missing_file_errors() {
+        let reg = default_registry();
+        assert!(check_structural_file(&reg, "/nonexistent/missing.el").is_err());
+    }
+
+    #[test]
+    fn test_glob_single_star_not_recursive() {
+        let dir = test_dir("glob_flat");
+        std::fs::write(dir.join("a.el"), "(defun a ())\n").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/b.el"), "(defun b ())\n").unwrap();
+        let pat = format!("{}/*.el", dir.to_str().unwrap());
+        let got = expand_paths(&pat);
+        assert_eq!(got.len(), 1, "single * must not descend into sub/: {got:?}");
+        assert!(got[0].ends_with("a.el"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_glob_double_star_recursive() {
+        let dir = test_dir("glob_recursive");
+        std::fs::write(dir.join("a.el"), "(defun a ())\n").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/b.el"), "(defun b ())\n").unwrap();
+        let pat = format!("{}/**/*.el", dir.to_str().unwrap());
+        let got = expand_paths(&pat);
+        assert_eq!(got.len(), 2, "** must match nested files: {got:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

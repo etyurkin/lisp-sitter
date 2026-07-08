@@ -2,7 +2,10 @@ use crate::anchors::{is_anchor_end, is_anchor_start, ANCHOR_END, ANCHOR_START};
 use crate::error::{Error, Result};
 use crate::plugin::LanguagePlugin;
 use crate::scan::{content_blank, replace_region};
-use crate::sexp_reader::{skip_atom_in, skip_line_comment, skip_sexp_in, skip_string, Dialect};
+use crate::sexp_reader::{
+    at_token_start, skip_atom_in, skip_block_comment, skip_line_comment, skip_sexp_in, skip_string,
+    Dialect,
+};
 
 pub fn get_form_text<'a>(
     plugin: &dyn LanguagePlugin,
@@ -105,11 +108,37 @@ fn end_of_forms(plugin: &dyn LanguagePlugin, content: &str) -> Result<usize> {
     if content_blank(content) {
         return Ok(0);
     }
-    plugin
-        .top_level_forms(content)?
-        .last()
-        .map(|f| f.end)
-        .ok_or_else(|| Error::Message("No forms".into()))
+    // Prefer the plugin's structured forms (for elisp these are definer forms,
+    // so a new form lands before a trailing `(provide …)`). Fall back to a
+    // byte-level scan of *all* top-level forms so a file made only of
+    // non-definer forms — e.g. `(require 'a)\n(provide 'x)` — still appends.
+    if let Some(end) = plugin.top_level_forms(content)?.last().map(|f| f.end) {
+        return Ok(end);
+    }
+    last_top_level_form_end(content).ok_or_else(|| Error::Message("No forms".into()))
+}
+
+/// Byte offset just past the last complete top-level s-expression, found with
+/// the raw scanner (dialect-agnostic; top-level `?(` literals don't occur).
+fn last_top_level_form_end(content: &str) -> Option<usize> {
+    use crate::sexp_reader::{skip_sexp_in, skip_whitespace_and_comments};
+    let b = content.as_bytes();
+    let mut i = 0;
+    let mut last_end = None;
+    loop {
+        i = skip_whitespace_and_comments(b, i);
+        if i >= b.len() {
+            break;
+        }
+        match skip_sexp_in(b, i, Dialect::Generic) {
+            Ok(end) if end > i => {
+                last_end = Some(end);
+                i = end;
+            }
+            _ => break,
+        }
+    }
+    last_end
 }
 
 /// Return byte positions of every `(sym …)` or `(sym)` call in `content`,
@@ -127,10 +156,18 @@ pub fn find_callers_in(content: &str, sym: &str, dialect: Dialect) -> Vec<usize>
             b';' => {
                 i = skip_line_comment(b, i).unwrap_or(b.len());
             }
+            // Block comment `#| ... |#` (possibly nested) — skip as a unit;
+            // skip_sexp_in would mis-scan an interior `|` as a pipe symbol and
+            // leak the rest of the comment as code.
+            b'#' if i + 1 < b.len() && b[i + 1] == b'|' => {
+                i = skip_block_comment(b, i).unwrap_or(b.len());
+            }
             b'#' => {
                 i = skip_sexp_in(b, i, dialect).unwrap_or(i + 1);
             }
-            b'?' if dialect == Dialect::Elisp => {
+            // Leading elisp char literal `?(` / `?\(` — skip so its paren is not
+            // seen as a call. Mid-symbol `?` (e.g. `foo?`) is an ordinary symbol.
+            b'?' if dialect == Dialect::Elisp && at_token_start(b, i) => {
                 i = skip_sexp_in(b, i, dialect).unwrap_or(i + 1);
             }
             b'(' => {
@@ -152,6 +189,44 @@ pub fn find_callers_in(content: &str, sym: &str, dialect: Dialect) -> Vec<usize>
         }
     }
     positions
+}
+
+/// Collect the names of every `(sym …)` call head in `content`, skipping
+/// strings, comments, block comments, and char literals. Used as the
+/// tree-sitter-free fallback for `LanguagePlugin::referenced_names`.
+pub fn call_head_names_in(content: &str, dialect: Dialect) -> std::collections::HashSet<String> {
+    let b = content.as_bytes();
+    let mut names = std::collections::HashSet::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' => i = skip_string(b, i).unwrap_or(b.len()),
+            b';' => i = skip_line_comment(b, i).unwrap_or(b.len()),
+            b'#' if i + 1 < b.len() && b[i + 1] == b'|' => {
+                i = skip_block_comment(b, i).unwrap_or(b.len());
+            }
+            b'#' => i = skip_sexp_in(b, i, dialect).unwrap_or(i + 1),
+            b'?' if dialect == Dialect::Elisp && at_token_start(b, i) => {
+                i = skip_sexp_in(b, i, dialect).unwrap_or(i + 1);
+            }
+            b'(' => {
+                let mut ws = i + 1;
+                while ws < b.len() && matches!(b[ws], b' ' | b'\t' | b'\n' | b'\r') {
+                    ws += 1;
+                }
+                if let Ok(end) = skip_atom_in(b, ws, dialect) {
+                    if end > ws {
+                        if let Ok(name) = std::str::from_utf8(&b[ws..end]) {
+                            names.insert(name.to_string());
+                        }
+                    }
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    names
 }
 
 #[cfg(test)]
@@ -189,5 +264,25 @@ mod tests {
         let src = "(bar-extended x) (xbar y) (bar)";
         let hits = find_callers_in(src, "bar", Dialect::Generic);
         assert_eq!(hits.len(), 1, "only (bar) should match, got {hits:?}");
+    }
+
+    #[test]
+    fn find_callers_skips_block_comment_with_interior_pipe() {
+        // The `(bar)` inside the block comment must not be reported even though
+        // the comment contains an odd number of interior `|`.
+        let src = "#| a|b (bar) |#\n(bar 1)\n";
+        let hits = find_callers_in(src, "bar", Dialect::Generic);
+        assert_eq!(hits.len(), 1, "only the real call counts, got {hits:?}");
+        assert!(
+            hits[0] > 15,
+            "the hit must be the real call, not in the comment"
+        );
+    }
+
+    #[test]
+    fn last_form_end_covers_non_definer_forms() {
+        let src = "(require 'a)\n(provide 'x)\n";
+        let end = last_top_level_form_end(src).unwrap();
+        assert_eq!(&src[..end], "(require 'a)\n(provide 'x)");
     }
 }

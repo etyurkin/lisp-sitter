@@ -168,19 +168,21 @@ Return (cons EXIT-CODE OUTPUT)."
 ;;;###autoload
 (defun lisp-sitter-replace-defun ()
   "Replace the top-level form at point, routing it through the CLI.
-The form text is taken from the buffer and re-validated by lisp-sitter
-before the file is rewritten on disk; the buffer is then reverted."
+The form text is taken from the current buffer (including unsaved edits to
+that form) and re-validated by lisp-sitter before the file is rewritten on
+disk.  When the buffer has no other unsaved changes it is reverted to reflect
+any normalization; otherwise it is left untouched so unrelated edits survive."
   (interactive)
   (let ((file (lisp-sitter--require-file))
         (name (or (lisp-sitter--defun-name) (user-error "No form at point")))
         (text (lisp-sitter--defun-text)))
-    (when (buffer-modified-p)
-      (user-error "Save the buffer first"))
     (lisp-sitter--check-ok
      (lisp-sitter--run-stdin text "replace" file name "--body-file" "-" "--write")
      "replace")
-    (revert-buffer t t t)
-    (message "Replaced `%s'" name)))
+    (if (buffer-modified-p)
+        (message "Replaced `%s' on disk; buffer has other unsaved edits" name)
+      (revert-buffer t t t)
+      (message "Replaced `%s'" name))))
 
 ;;;###autoload
 (defun lisp-sitter-rename (old new project)
@@ -189,6 +191,8 @@ before the file is rewritten on disk; the buffer is then reverted."
    (list (lisp-sitter--read-symbol "Rename")
          (read-string "New name: ")
          current-prefix-arg))
+  (when (buffer-modified-p)
+    (user-error "Save the buffer first"))
   (let* ((file (lisp-sitter--require-file))
          (target (if project (file-name-directory file) file))
          (res (lisp-sitter--check-ok
@@ -242,8 +246,9 @@ With prefix arg PROJECT, analyze the whole directory."
   "List structural errors (missing tokens, unbalanced parens) in the current file."
   (interactive)
   (let* ((file (lisp-sitter--require-file))
-         (res (lisp-sitter--run "find-errors" file)))
-    (if (string-blank-p (string-trim (cdr res)))
+         (res (lisp-sitter--run "find-errors" file))
+         (out (string-trim (cdr res))))
+    (if (or (string-blank-p out) (string-prefix-p "No errors" out))
         (message "lisp-sitter: no structural errors found")
       (lisp-sitter--show "*lisp-sitter errors*" (cdr res)))))
 
@@ -259,7 +264,9 @@ Applies the change to the file on disk and reverts the buffer."
     (when (buffer-modified-p)
       (user-error "Save the buffer first"))
     (lisp-sitter--check-ok
-     (lisp-sitter--run "substitute" file symbol old new "--write") "substitute")
+     (lisp-sitter--run "substitute" file symbol
+                       "--pattern" old "--replacement" new "--write")
+     "substitute")
     (revert-buffer t t t)
     (message "Substituted in `%s'" symbol)))
 

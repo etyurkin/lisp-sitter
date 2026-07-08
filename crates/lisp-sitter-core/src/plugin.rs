@@ -34,6 +34,13 @@ pub struct SymbolRef {
 pub trait LanguagePlugin: Send + Sync {
     fn id(&self) -> &'static str;
     fn extensions(&self) -> &[&'static str];
+
+    /// Which byte-scanner dialect this language uses. Elisp overrides this to
+    /// [`Dialect::Elisp`] so its `?(` / `?\(` char literals are recognized;
+    /// everything else uses the generic dialect.
+    fn dialect(&self) -> crate::sexp_reader::Dialect {
+        crate::sexp_reader::Dialect::Generic
+    }
     fn matches_path(&self, path: &str) -> bool {
         let path = path.to_ascii_lowercase();
         self.extensions().iter().any(|ext| path.ends_with(ext))
@@ -114,13 +121,17 @@ pub trait LanguagePlugin: Send + Sync {
     /// The default implementation uses the character-level scanner from
     /// [`crate::edit::find_callers_in`] and does not classify quotes.
     /// Each language plugin overrides this with a tree-sitter AST walk.
+    /// Names of all symbols referenced (call head / `#'` / `'`) in `content`,
+    /// collected in a single pass. Project analysis uses this to find unused
+    /// definitions without re-scanning each file once per candidate name. The
+    /// default uses the character scanner (call heads only); tree-sitter plugins
+    /// override it to also capture quoted references.
+    fn referenced_names(&self, content: &str) -> std::collections::HashSet<String> {
+        crate::edit::call_head_names_in(content, self.dialect())
+    }
+
     fn find_symbol_refs(&self, content: &str, symbol: &str) -> Vec<SymbolRef> {
-        let dialect = if self.id() == "elisp" {
-            crate::sexp_reader::Dialect::Elisp
-        } else {
-            crate::sexp_reader::Dialect::Generic
-        };
-        crate::edit::find_callers_in(content, symbol, dialect)
+        crate::edit::find_callers_in(content, symbol, self.dialect())
             .into_iter()
             .map(|form_start| {
                 // sym_start: skip `(` and any whitespace
