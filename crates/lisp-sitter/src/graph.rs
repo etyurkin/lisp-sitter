@@ -487,7 +487,7 @@ fn git_changed_files(
     // would otherwise let a caller turn `git diff <ref>` into arbitrary flags.
     // Valid git refnames never begin with `-`.
     if base.starts_with('-') {
-        return Err(Error::Message(format!(
+        return Err(Error::InvalidArgs(format!(
             "invalid diff ref `{base}`: refs must not start with '-'"
         )));
     }
@@ -538,9 +538,9 @@ fn run_git(root: &Path, args: &[&str]) -> Result<String, Error> {
         .current_dir(root)
         .args(args)
         .output()
-        .map_err(|e| Error::Message(format!("failed to run git: {e}")))?;
+        .map_err(|e| Error::Io(format!("failed to run git: {e}")))?;
     if !output.status.success() {
-        return Err(Error::Message(format!(
+        return Err(Error::Io(format!(
             "git {} failed: {}",
             args.join(" "),
             String::from_utf8_lossy(&output.stderr).trim()

@@ -140,7 +140,7 @@ fn body_range_char(ft: &str) -> Result<(usize, usize), Error> {
     let b = ft.as_bytes();
     let mut pos = 0;
     if pos >= b.len() || b[pos] != b'(' {
-        return Err(Error::Message("form must start with (".into()));
+        return Err(Error::InvalidArgs("form must start with (".into()));
     }
     pos += 1;
     pos = skip_sp(b, pos);
@@ -153,11 +153,11 @@ fn body_range_char(ft: &str) -> Result<(usize, usize), Error> {
     pos = skip_preamble(b, pos);
     let bs = pos;
     if b.last() != Some(&b')') {
-        return Err(Error::Message("form must end with )".into()));
+        return Err(Error::InvalidArgs("form must end with )".into()));
     }
     let be = ft.len() - 1;
     if bs > be {
-        return Err(Error::Message("no body to wrap".into()));
+        return Err(Error::InvalidArgs("no body to wrap".into()));
     }
     Ok((bs, be))
 }
@@ -406,7 +406,7 @@ pub fn substitute(
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     let ft = get_form_text(p, &c, sym)?;
     let (s, e) = find_sexp(p, ft, pat, p.dialect())
-        .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
+        .ok_or_else(|| Error::PatternNotFound(pat.to_string()))?;
     let nf = format!("{}{}{}", &ft[..s], rep, &ft[e..]);
     let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "substitute"))?;
     Ok(u)
@@ -426,7 +426,7 @@ pub fn extract(
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     let ft = get_form_text(p, &c, sym)?;
     let (s, e) = find_sexp(p, ft, pat, p.dialect())
-        .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
+        .ok_or_else(|| Error::PatternNotFound(pat.to_string()))?;
     let ex = &ft[s..e];
     let fv = if params.is_empty() {
         detect_syms(ex, p)
@@ -576,7 +576,7 @@ fn make_wrapper(w: &str, a: &[(&str, &str)], body: &str) -> Result<String, Error
             };
             Ok(format!("(if {cond}\n    {}\n  nil)", then))
         }
-        o => Err(Error::Message(format!("unknown wrapper: {o}"))),
+        o => Err(Error::InvalidArgs(format!("unknown wrapper: {o}"))),
     }
 }
 
@@ -603,10 +603,10 @@ pub fn instrument(
         )
     } else if let (Some(pat), Some(wrp)) = (at, wrap) {
         let (s, e) = find_sexp(p, ft, pat, p.dialect())
-            .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
+            .ok_or_else(|| Error::PatternNotFound(pat.to_string()))?;
         format!("{}{}{}", &ft[..s], &wrp.replace("<form>", pat), &ft[e..])
     } else {
-        return Err(Error::Message("provide --with or --at --wrap".into()));
+        return Err(Error::InvalidArgs("provide --with or --at --wrap".into()));
     };
     let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "instrument"))?;
     Ok(u)
@@ -953,8 +953,7 @@ pub fn splice(reg: &Registry, path: &str, sym: &str, pat: &str) -> Result<String
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     let ft = get_form_text(p, &c, sym)?;
     let d = p.dialect();
-    let (s, e) = find_sexp(p, ft, pat, d)
-        .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
+    let (s, e) = find_sexp(p, ft, pat, d).ok_or_else(|| Error::PatternNotFound(pat.to_string()))?;
     let b = ft.as_bytes();
     if b.get(s) != Some(&b'(') || b.get(e.saturating_sub(1)) != Some(&b')') {
         return Err(Error::Message(
@@ -988,8 +987,7 @@ pub fn raise(reg: &Registry, path: &str, sym: &str, pat: &str) -> Result<String,
     let p = crate::ops::resolve_plugin(reg, path, None)?;
     let ft = get_form_text(p, &c, sym)?;
     let d = p.dialect();
-    let (s, e) = find_sexp(p, ft, pat, d)
-        .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
+    let (s, e) = find_sexp(p, ft, pat, d).ok_or_else(|| Error::PatternNotFound(pat.to_string()))?;
     let (ps, pe) = find_enclosing_sexp(ft, s, d)
         .ok_or_else(|| Error::Message("raise: pattern has no enclosing form to replace".into()))?;
     let raised = ft[s..e].to_string();
@@ -1066,7 +1064,7 @@ pub fn convert_let(reg: &Registry, path: &str, sym: &str, target: &str) -> Resul
         "let*" => ("let", "let*"),
         "let" => ("let*", "let"),
         other => {
-            return Err(Error::Message(format!(
+            return Err(Error::InvalidArgs(format!(
                 "invalid conversion target `{other}`: expected `let` or `let*`"
             )))
         }
