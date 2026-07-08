@@ -367,7 +367,7 @@ fn project_root(path: &str) -> PathBuf {
 
 pub fn callers(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
     if is_project_path(path) {
-        let paths = ops::expand_paths(path);
+        let paths = ops::expand_paths(reg, path);
         let graph = ProjectGraph::build(reg, &paths)?;
         let hits = graph.callers(sym);
         if hits.is_empty() {
@@ -381,7 +381,7 @@ pub fn callers(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
 }
 
 pub fn callees(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
-    let paths = ops::expand_paths(path);
+    let paths = ops::expand_paths(reg, path);
     let graph = ProjectGraph::build(reg, &paths)?;
     let hits = graph.callees(sym);
     if hits.is_empty() {
@@ -392,13 +392,13 @@ pub fn callees(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
 }
 
 pub fn explore(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
-    let paths = ops::expand_paths(path);
+    let paths = ops::expand_paths(reg, path);
     let graph = ProjectGraph::build(reg, &paths)?;
     Ok(graph.explore(sym))
 }
 
 pub fn impact(reg: &Registry, path: &str, sym: &str, depth: usize) -> Result<String, Error> {
-    let paths = ops::expand_paths(path);
+    let paths = ops::expand_paths(reg, path);
     let graph = ProjectGraph::build(reg, &paths)?;
     Ok(graph.impact(sym, depth))
 }
@@ -412,11 +412,11 @@ pub fn diff(
     with_impact: bool,
 ) -> Result<String, Error> {
     let root = std::fs::canonicalize(project_root(path)).unwrap_or_else(|_| project_root(path));
-    let paths = ops::expand_paths(path);
+    let paths = ops::expand_paths(reg, path);
     let path_set: HashSet<String> = paths.iter().map(|p| canonical_path(p)).collect();
     let graph = ProjectGraph::build(reg, &paths)?;
 
-    let changed = git_changed_files(&root, base)?;
+    let changed = git_changed_files(reg, &root, base)?;
     let mut out = String::new();
     out.push_str(&format!("diff vs `{base}` (from {})\n\n", root.display()));
 
@@ -478,7 +478,11 @@ pub fn diff(
     Ok(out)
 }
 
-fn git_changed_files(root: &Path, base: &str) -> Result<Vec<(String, Vec<u32>)>, Error> {
+fn git_changed_files(
+    reg: &Registry,
+    root: &Path,
+    base: &str,
+) -> Result<Vec<(String, Vec<u32>)>, Error> {
     // Reject a ref that git would parse as an option (e.g. `--output=…`), which
     // would otherwise let a caller turn `git diff <ref>` into arbitrary flags.
     // Valid git refnames never begin with `-`.
@@ -495,7 +499,7 @@ fn git_changed_files(root: &Path, base: &str) -> Result<Vec<(String, Vec<u32>)>,
     for line in patch.lines() {
         if let Some(path) = line.strip_prefix("+++ b/") {
             if let Some(prev) = current.take() {
-                if is_lisp_rel(&prev.0) {
+                if reg.matches_path(&prev.0) {
                     out.push(prev);
                 }
             }
@@ -507,7 +511,7 @@ fn git_changed_files(root: &Path, base: &str) -> Result<Vec<(String, Vec<u32>)>,
         }
     }
     if let Some(prev) = current {
-        if is_lisp_rel(&prev.0) {
+        if reg.matches_path(&prev.0) {
             out.push(prev);
         }
     }
@@ -527,15 +531,6 @@ fn hunk_added_lines(hunk: &str) -> Vec<u32> {
         }
     }
     lines
-}
-
-fn is_lisp_rel(rel: &str) -> bool {
-    rel.ends_with(".el")
-        || rel.ends_with(".lisp")
-        || rel.ends_with(".cl")
-        || rel.ends_with(".scm")
-        || rel.ends_with(".ss")
-        || rel.ends_with(".sld")
 }
 
 fn run_git(root: &Path, args: &[&str]) -> Result<String, Error> {

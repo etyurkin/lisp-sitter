@@ -54,6 +54,13 @@ impl Registry {
         Err(Error::NoPlugin(path.to_string()))
     }
 
+    /// Whether `path` maps to a known language — by a plugin's built-in
+    /// extensions or a user-configured extension mapping. Use this to filter
+    /// directory/glob expansions so config-added extensions are included.
+    pub fn matches_path(&self, path: &str) -> bool {
+        self.plugin_for_path(path).is_ok()
+    }
+
     pub fn plugin_for_id(&self, id: &str) -> Option<&dyn LanguagePlugin> {
         self.plugins
             .iter()

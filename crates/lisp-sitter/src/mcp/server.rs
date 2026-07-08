@@ -494,7 +494,7 @@ impl LispSitterMcp {
         } else {
             lisp_sitter::transform::RefsMode::HeadAndSharp
         };
-        let paths = ops::expand_paths(&args.path);
+        let paths = ops::expand_paths(&self.reg, &args.path);
         let changed = lisp_sitter::transform::rename_project(
             &self.reg, &paths, &args.old, &args.new, ref_mode,
         )
@@ -545,7 +545,7 @@ impl LispSitterMcp {
                 arity: args.arity,
             }
         };
-        let paths = ops::expand_paths(&args.path);
+        let paths = ops::expand_paths(&self.reg, &args.path);
         tool_result(lisp_sitter::analyze::analyze(&self.reg, &paths, opt))
     }
 

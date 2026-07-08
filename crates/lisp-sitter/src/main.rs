@@ -567,7 +567,7 @@ async fn run(cli: Cli) -> Result<()> {
             let multi =
                 std::path::Path::new(&path).is_dir() || path.contains('*') || path.contains('?');
             if multi {
-                let paths = lisp_sitter::ops::expand_paths(&path);
+                let paths = lisp_sitter::ops::expand_paths(&reg, &path);
                 let changed =
                     lisp_sitter::transform::rename_project(&reg, &paths, &old, &new, ref_mode)?;
                 if write {
@@ -814,7 +814,7 @@ async fn run(cli: Cli) -> Result<()> {
                     arity,
                 }
             };
-            let paths = lisp_sitter::ops::expand_paths(&path);
+            let paths = lisp_sitter::ops::expand_paths(&reg, &path);
             print!("{}", lisp_sitter::analyze::analyze(&reg, &paths, opt)?);
         }
         Command::CheckNode {

@@ -197,7 +197,7 @@ pub fn complete_node(_reg: &Registry, lang: &str, body: &str) -> Result<String, 
 /// Format already-read content. Avoids redundant file I/O for stdin.
 pub fn format_content(content: &str, reg: &Registry, path: &str) -> Result<String, Error> {
     let p = resolve_plugin(reg, path, None)?;
-    Ok(format_source_in(content, dialect_for_id(p.id())))
+    Ok(format_source_in(content, p.dialect()))
 }
 
 pub fn format_file(reg: &Registry, path: &str) -> Result<String, Error> {
@@ -209,7 +209,7 @@ pub fn fmt_write(reg: &Registry, path: &str) -> Result<String, Error> {
     let c = read_file(path)?;
     let p = resolve_plugin(reg, path, None)?;
     ensure_source_editable(p, &c)?;
-    let f = format_source_in(&c, dialect_for_id(p.id()));
+    let f = format_source_in(&c, p.dialect());
     p.check_file(&f).map_err(|e| match e {
         Error::Syntax(d) => Error::SyntaxAfterEdit {
             operation: "fmt".into(),
@@ -436,17 +436,17 @@ fn is_lisp_ext(path: &str) -> bool {
 ///   within a single path component (they do not cross `/`), and `**` matches
 ///   any number of intervening directories (`src/**/*.el`).
 /// - Anything else is returned verbatim as a single-element list.
-pub fn expand_paths(path: &str) -> Vec<String> {
+pub fn expand_paths(reg: &Registry, path: &str) -> Vec<String> {
     if Path::new(path).is_dir() {
         let mut r: Vec<String> = walkdir_paths(path)
             .into_iter()
-            .filter(|f| is_lisp_ext(f))
+            .filter(|f| reg.matches_path(f))
             .collect();
         r.sort();
         r
     } else if path.contains('*') || path.contains('?') {
         let mut r = glob_expand(path);
-        r.retain(|f| is_lisp_ext(f));
+        r.retain(|f| reg.matches_path(f));
         r.sort();
         r.dedup();
         r
@@ -675,7 +675,7 @@ mod tests {
         let dir = test_dir("expand_single");
         let path = dir.join("test.el");
         std::fs::write(&path, "(defun foo () 1)\n").unwrap();
-        let paths = expand_paths(path.to_str().unwrap());
+        let paths = expand_paths(&default_registry(), path.to_str().unwrap());
         assert_eq!(paths.len(), 1);
         assert!(paths[0].ends_with("test.el"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -689,9 +689,12 @@ mod tests {
         std::fs::write(dir.join("c.txt"), "text").unwrap();
 
         let pat = format!("{}/*.el", dir.to_str().unwrap());
-        assert_eq!(expand_paths(&pat).len(), 2);
+        assert_eq!(expand_paths(&default_registry(), &pat).len(), 2);
         // directory expansion keeps only lisp files
-        assert_eq!(expand_paths(dir.to_str().unwrap()).len(), 2);
+        assert_eq!(
+            expand_paths(&default_registry(), dir.to_str().unwrap()).len(),
+            2
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -754,9 +757,31 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/b.el"), "(defun b ())\n").unwrap();
         let pat = format!("{}/*.el", dir.to_str().unwrap());
-        let got = expand_paths(&pat);
+        let got = expand_paths(&default_registry(), &pat);
         assert_eq!(got.len(), 1, "single * must not descend into sub/: {got:?}");
         assert!(got[0].ends_with("a.el"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_expand_paths_honors_configured_extension() {
+        let dir = test_dir("expand_configured_ext");
+        std::fs::write(dir.join("a.clef"), "(defun a ())\n").unwrap();
+        std::fs::write(dir.join("b.el"), "(defun b ())\n").unwrap();
+        // Default registry: only .el is a known extension.
+        assert_eq!(
+            expand_paths(&default_registry(), dir.to_str().unwrap()).len(),
+            1
+        );
+        // With .clef mapped to commonlisp, both files are included.
+        let mut reg = default_registry();
+        reg.add_extension(".clef", "commonlisp");
+        let got = expand_paths(&reg, dir.to_str().unwrap());
+        assert_eq!(
+            got.len(),
+            2,
+            "configured extension must be included: {got:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -767,7 +792,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/b.el"), "(defun b ())\n").unwrap();
         let pat = format!("{}/**/*.el", dir.to_str().unwrap());
-        let got = expand_paths(&pat);
+        let got = expand_paths(&default_registry(), &pat);
         assert_eq!(got.len(), 2, "** must match nested files: {got:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
