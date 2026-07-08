@@ -408,31 +408,6 @@ fn restrict_permissions(path: &Path, mode: u32) {
 #[cfg(not(unix))]
 fn restrict_permissions(_path: &Path, _mode: u32) {}
 
-pub fn callers(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
-    let c = read_file(path)?;
-    let p = resolve_plugin(reg, path, None)?;
-    let def = p.node_bounds(&c, sym).ok();
-    let forms = p.list_forms(&c)?;
-    let mut r = Vec::new();
-    for sr in p.find_symbol_refs(&c, sym) {
-        if sr.kind != lisp_sitter_core::RefKind::CallHead {
-            continue;
-        }
-        let pos = sr.form_start;
-        if def.is_some_and(|(ds, de)| pos >= ds && pos < de) {
-            continue;
-        }
-        if let Some(o) = forms.iter().find(|f| pos >= f.start && pos < f.end) {
-            r.push(pos_label(&c, pos, &format!("{} calls {}", o.label, sym)));
-        }
-    }
-    if r.is_empty() {
-        Ok(format!("No callers of `{sym}` found"))
-    } else {
-        Ok(r.join("\n"))
-    }
-}
-
 fn is_lisp_ext(path: &str) -> bool {
     path.ends_with(".el")
         || path.ends_with(".lisp")
@@ -942,7 +917,7 @@ mod tests {
         )
         .unwrap();
 
-        let c = callers(&reg, path.to_str().unwrap(), "b").unwrap();
+        let c = crate::graph::callers(&reg, path.to_str().unwrap(), "b").unwrap();
         assert!(c.contains("a calls b"));
 
         let _ = std::fs::remove_dir_all(&dir);

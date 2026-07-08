@@ -683,28 +683,21 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Callers { path, symbol } => {
             if j {
-                let out = lisp_sitter::graph::callers(&reg, &path, &symbol)?;
-                if std::path::Path::new(&path).is_dir() || path.contains('*') || path.contains('?')
-                {
-                    let lines: Vec<_> = out
-                        .lines()
-                        .filter(|l| !l.is_empty())
-                        .map(|l| serde_json::json!({"label": l}))
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&lines)?);
-                } else {
-                    let c = lisp_sitter::ops::read_file(&path)?;
-                    let p = lisp_sitter::ops::resolve_plugin(&reg, &path, None)?;
-                    let def = p.node_bounds(&c, &symbol).ok();
-                    let forms = p.list_forms(&c)?;
-                    let r: Vec<_> = p.find_symbol_refs(&c, &symbol).into_iter()
-                        .filter(|sr| sr.kind == lisp_sitter_core::RefKind::CallHead)
-                        .filter(|sr| !def.is_some_and(|(ds, de)| sr.form_start >= ds && sr.form_start < de))
-                        .filter_map(|sr| forms.iter().find(|f| sr.form_start >= f.start && sr.form_start < f.end)
-                            .map(|o| serde_json::json!({"in": o.label, "label": format!("{} calls {}", o.label, symbol), "start": sr.form_start})))
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&r)?);
-                }
+                let sites = lisp_sitter::graph::caller_sites(&reg, &path, &symbol)?;
+                let r: Vec<_> = sites
+                    .iter()
+                    .map(|s| {
+                        serde_json::json!({
+                            "in": s.label,
+                            "path": s.path,
+                            "label": format!("{} calls {}", s.label, symbol),
+                            "start": s.start,
+                            "line": s.line,
+                            "col": s.col,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&r)?);
             } else {
                 println!("{}", lisp_sitter::graph::callers(&reg, &path, &symbol)?);
             }
