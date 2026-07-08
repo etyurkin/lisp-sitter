@@ -349,14 +349,8 @@ fn remove_form_content(
     }
     u.push_str(&c[e..]);
     if !keep {
-        // Stub call sites with a dialect-appropriate no-op.
-        // `ignore` is valid elisp; `values` is valid CL and Scheme (returns no values).
-        let stub = if p.id() == "elisp" {
-            "ignore"
-        } else {
-            "values"
-        };
-        u = replace_head_symbol(p, &u, sym, stub, RefsMode::HeadOnly);
+        // Stub call sites with the dialect's no-op head symbol.
+        u = replace_head_symbol(p, &u, sym, p.noop_stub(), RefsMode::HeadOnly);
     }
     p.check_file(&u).map_err(|e| match e {
         Error::Syntax(d) => Error::SyntaxAfterEdit {
@@ -445,11 +439,7 @@ pub fn extract(
     } else {
         format!("({})", fv.join(" "))
     };
-    let nd = if p.id() == "scheme" {
-        format!("(define ({name} {ps})\n  {ex})\n")
-    } else {
-        format!("(defun {name} {ps}\n  {ex})\n")
-    };
+    let nd = p.definition_template(name, &ps, ex);
     let call = if fv.is_empty() {
         format!("({name})")
     } else {

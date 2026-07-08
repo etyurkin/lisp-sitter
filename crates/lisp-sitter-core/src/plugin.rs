@@ -41,6 +41,18 @@ pub trait LanguagePlugin: Send + Sync {
     fn dialect(&self) -> crate::sexp_reader::Dialect {
         crate::sexp_reader::Dialect::Generic
     }
+
+    /// Head symbol that neutralizes a removed definition's call sites when the
+    /// caller keeps them (elisp `ignore`, CL/Scheme `values`).
+    fn noop_stub(&self) -> &'static str {
+        "values"
+    }
+
+    /// Render a new function definition in this dialect (used by `extract`).
+    /// `param_list` is already parenthesized (`()` or `(a b)`).
+    fn definition_template(&self, name: &str, param_list: &str, body: &str) -> String {
+        format!("(defun {name} {param_list}\n  {body})\n")
+    }
     fn matches_path(&self, path: &str) -> bool {
         let path = path.to_ascii_lowercase();
         self.extensions().iter().any(|ext| path.ends_with(ext))

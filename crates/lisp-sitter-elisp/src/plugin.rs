@@ -1,120 +1,74 @@
-use lisp_sitter_core::treesit_util::outline_lines;
-use lisp_sitter_core::{DefinerSet, Error, FormInfo, LanguagePlugin, Result};
+use lisp_sitter_core::definers::Definer;
+use lisp_sitter_core::treesit_plugin::{DialectSpec, TreesitPlugin};
+use lisp_sitter_core::{Dialect, FormInfo};
 
-use crate::treesit::{base_definers, has_parse_errors, top_level_forms};
+use crate::treesit::base_definers;
 
-pub struct ElispPlugin {
-    definers: DefinerSet,
-}
+/// Emacs Lisp dialect specification. Structural behavior comes from
+/// [`TreesitPlugin`]; this supplies only the elisp-specific pieces.
+pub struct ElispSpec;
 
-impl ElispPlugin {
-    /// Plugin with the built-in Emacs Lisp definer set.
-    pub fn new() -> Self {
-        Self {
-            definers: DefinerSet::new(base_definers()),
-        }
-    }
-
-    /// Plugin whose definer set also recognizes the given extra keywords
-    /// (user-configured project def-macros).
-    pub fn with_extra_definers(extra: &[String]) -> Self {
-        let mut definers = DefinerSet::new(base_definers());
-        definers.extend_keywords(extra);
-        Self { definers }
-    }
-}
-
-impl Default for ElispPlugin {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LanguagePlugin for ElispPlugin {
+impl DialectSpec for ElispSpec {
     fn id(&self) -> &'static str {
         "elisp"
     }
 
-    fn extensions(&self) -> &[&'static str] {
+    fn extensions(&self) -> &'static [&'static str] {
         &[".el"]
     }
 
-    fn dialect(&self) -> lisp_sitter_core::Dialect {
-        lisp_sitter_core::Dialect::Elisp
+    fn dialect(&self) -> Dialect {
+        Dialect::Elisp
     }
 
-    fn top_level_forms(&self, content: &str) -> Result<Vec<FormInfo>> {
-        Ok(top_level_forms(content, &self.definers))
+    fn root_kind(&self) -> &'static str {
+        "source_file"
     }
 
-    fn list_forms(&self, content: &str) -> Result<Vec<FormInfo>> {
-        Ok(top_level_forms(content, &self.definers))
+    fn language(&self) -> tree_sitter::Language {
+        tree_sitter_elisp::LANGUAGE.into()
     }
 
-    fn check_file(&self, content: &str) -> Result<()> {
-        validate_content(content)
+    fn base_definers(&self) -> Vec<Definer> {
+        base_definers()
     }
 
-    fn check_node(&self, node: &str) -> Result<()> {
+    fn wrap_node(&self, node: &str) -> String {
         // Newline before the closing paren so a trailing line comment inside
         // `node` (e.g. `(foo) ; note`) doesn't swallow it.
-        let wrapped = format!("(progn {}\n)", node.trim());
-        validate_content(&wrapped)
+        format!("(progn {}\n)", node.trim())
     }
 
-    fn outline(&self, content: &str) -> Result<String> {
-        let forms = top_level_forms(content, &self.definers);
-        if forms.is_empty() && !content.trim().is_empty() {
-            validate_content(content)?;
-        }
-        outline_lines(content, &forms)
+    fn noop_stub(&self) -> &'static str {
+        "ignore"
     }
 
-    fn tree_depth(&self, content: &str, depth: usize) -> Result<String> {
-        let Some(tree) = crate::treesit::parse(content) else {
-            return Ok(String::new());
-        };
-        Ok(lisp_sitter_core::treesit_util::recursive_outline(
-            content,
-            tree.root_node(),
-            depth,
-        ))
+    fn is_known_global(&self, name: &str) -> bool {
+        is_elisp_global(name)
     }
 
-    fn node_bounds(&self, content: &str, symbol: &str) -> Result<(usize, usize)> {
-        let target = symbol.trim();
-        crate::treesit::node_bounds(content, &self.definers, target)
-            .ok_or_else(|| Error::FormNotFound(target.to_string()))
-    }
-
-    fn semantic_check(&self, content: &str) -> Vec<String> {
+    fn semantic_check(&self, content: &str, forms: &[FormInfo]) -> Vec<String> {
         let mut warnings = Vec::new();
-        let forms = top_level_forms(content, &self.definers);
 
         // ── check: missing docstrings ───────────────────────────
-        for f in &forms {
-            let Some(_name) = f.name.as_deref() else {
+        for f in forms {
+            if f.name.as_deref().is_none() {
                 continue;
-            };
+            }
             let text = &content[f.start..f.end];
-            let is_def = matches!(
-                f.label.split(':').next().unwrap_or(""),
-                "defun" | "defsubst" | "cl-defun" | "defmacro"
-            );
+            let head = f.label.split(':').next().unwrap_or("");
+            let is_def = matches!(head, "defun" | "defsubst" | "cl-defun" | "defmacro");
             if is_def && !lisp_sitter_core::has_docstring(text) {
                 warnings.push(format!(
                     "{}: missing docstring",
-                    lisp_sitter_core::treesit_util::pos_label(content, f.start, &f.label)
+                    lisp_sitter_core::pos_label(content, f.start, &f.label)
                 ));
             }
-            let is_defvar = matches!(
-                f.label.split(':').next().unwrap_or(""),
-                "defvar" | "defconst" | "defcustom"
-            );
+            let is_defvar = matches!(head, "defvar" | "defconst" | "defcustom");
             if is_defvar && !lisp_sitter_core::has_docstring(text) && !text.contains("&define") {
                 warnings.push(format!(
                     "{}: missing docstring",
-                    lisp_sitter_core::position::pos_label(content, f.start, &f.label)
+                    lisp_sitter_core::pos_label(content, f.start, &f.label)
                 ));
             }
         }
@@ -122,9 +76,8 @@ impl LanguagePlugin for ElispPlugin {
         // ── check: missing (provide '…) ─────────────────────────
         let has_provide = content.contains("(provide ");
         let defines_something = forms.iter().any(|f| {
-            let label = f.label.split(':').next().unwrap_or("");
             matches!(
-                label,
+                f.label.split(':').next().unwrap_or(""),
                 "defun"
                     | "defsubst"
                     | "defmacro"
@@ -137,81 +90,29 @@ impl LanguagePlugin for ElispPlugin {
         if defines_something && !has_provide {
             warnings.push(format!(
                 "{}: file defines symbols but has no (provide '…) form",
-                lisp_sitter_core::position::pos_label(content, 0, "top")
+                lisp_sitter_core::pos_label(content, 0, "top")
             ));
         }
 
         warnings
     }
-    fn form_body_range(&self, form_text: &str) -> Option<(usize, usize)> {
-        let tree = crate::treesit::parse(form_text)?;
-        let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        Some((info.body_start, info.body_end))
+}
+
+/// The Emacs Lisp plugin: a [`TreesitPlugin`] driven by [`ElispSpec`].
+pub struct ElispPlugin;
+
+impl ElispPlugin {
+    /// Plugin with the built-in Emacs Lisp definer set.
+    #[allow(clippy::new_ret_no_self)] // `ElispPlugin` is a constructor namespace
+    pub fn new() -> TreesitPlugin {
+        TreesitPlugin::new(Box::new(ElispSpec))
     }
 
-    fn form_params_and_body(&self, form_text: &str) -> Option<(Vec<String>, String)> {
-        let tree = crate::treesit::parse(form_text)?;
-        let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        Some((
-            info.param_names,
-            form_text[info.body_start..info.body_end].to_string(),
-        ))
+    /// Plugin whose definer set also recognizes the given extra keywords.
+    pub fn with_extra_definers(extra: &[String]) -> TreesitPlugin {
+        TreesitPlugin::with_extra_definers(Box::new(ElispSpec), extra)
     }
-
-    fn form_rename_name(&self, form_text: &str, old: &str, new: &str) -> Option<String> {
-        let tree = crate::treesit::parse(form_text)?;
-        let info = lisp_sitter_core::treesit_util::analyze_def_form(form_text, tree.root_node())?;
-        if &form_text[info.name_start..info.name_end] != old {
-            return None;
-        }
-        let mut result = form_text.to_string();
-        result.replace_range(info.name_start..info.name_end, new);
-        Some(result)
-    }
-
-    fn find_sexp_in(&self, content: &str, pattern: &str) -> Option<Option<(usize, usize)>> {
-        let tree = crate::treesit::parse(content)?;
-        Some(lisp_sitter_core::treesit_util::find_sexp_in_tree(
-            content,
-            pattern,
-            tree.root_node(),
-        ))
-    }
-
-    fn find_symbol_refs(
-        &self,
-        content: &str,
-        symbol: &str,
-    ) -> Vec<lisp_sitter_core::plugin::SymbolRef> {
-        crate::treesit::parse(content)
-            .map(|tree| {
-                lisp_sitter_core::treesit_util::find_symbol_refs_in_tree(
-                    content,
-                    tree.root_node(),
-                    symbol,
-                )
-            })
-            .unwrap_or_default()
-    }
-
-    fn referenced_names(&self, content: &str) -> std::collections::HashSet<String> {
-        crate::treesit::parse(content)
-            .map(|tree| {
-                lisp_sitter_core::treesit_util::referenced_names_in_tree(content, tree.root_node())
-            })
-            .unwrap_or_default()
-    }
-
-    fn find_errors(&self, content: &str) -> Vec<String> {
-        crate::treesit::parse(content)
-            .map(|tree| lisp_sitter_core::treesit_util::find_error_nodes(content, tree.root_node()))
-            .unwrap_or_default()
-    }
-
-    fn is_known_global(&self, name: &str) -> bool {
-        is_elisp_global(name)
-    }
-} // impl LanguagePlugin for ElispPlugin
+}
 
 /// Curated (non-exhaustive) set of Emacs Lisp special forms and common
 /// built-ins, used by project analysis to suppress unresolved-call warnings.
@@ -293,8 +194,7 @@ fn is_elisp_global(name: &str) -> bool {
             "seq-filter",
             "seq-reduce",
             "seq-find",
-            "seq-do",
-            // list / sequence builtins
+            "seq-do", // list / sequence builtins
             "car",
             "cdr",
             "caar",
@@ -322,8 +222,7 @@ fn is_elisp_global(name: &str) -> bool {
             "make-list",
             "make-vector",
             "last",
-            "butlast",
-            // predicates / equality
+            "butlast", // predicates / equality
             "eq",
             "eql",
             "equal",
@@ -382,8 +281,7 @@ fn is_elisp_global(name: &str) -> bool {
             "symbol-value",
             "intern",
             "make-symbol",
-            "gensym",
-            // io / messaging
+            "gensym", // io / messaging
             "message",
             "error",
             "user-error",
@@ -392,8 +290,7 @@ fn is_elisp_global(name: &str) -> bool {
             "prin1",
             "insert",
             "point",
-            "goto-char",
-            // hash tables / alist
+            "goto-char", // hash tables / alist
             "make-hash-table",
             "gethash",
             "puthash",
@@ -411,26 +308,11 @@ fn is_elisp_global(name: &str) -> bool {
     set.contains(name)
 }
 
-fn validate_content(content: &str) -> Result<()> {
-    if let Some(err) =
-        lisp_sitter_core::scan::scan_parens_in(content, lisp_sitter_core::Dialect::Elisp)
-    {
-        return Err(Error::Syntax(err));
-    }
-    if has_parse_errors(content) {
-        return Err(Error::Syntax(lisp_sitter_core::position::error_at(
-            content,
-            0,
-            "tree-sitter parse error",
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use lisp_sitter_core::edit::{insert_after, replace_node};
+    use lisp_sitter_core::LanguagePlugin;
 
     #[test]
     fn check_valid_file() {
@@ -449,8 +331,6 @@ mod tests {
         let content = "(defun alpha () 1)\n\n(defun beta () 2)\n";
         let bounds = ElispPlugin::new().node_bounds(content, "beta").unwrap();
         assert!(bounds.0 < bounds.1);
-        let rendered = format!("{}:{}", bounds.0, bounds.1);
-        assert!(rendered.chars().any(|c| c.is_ascii_digit()));
     }
 
     #[test]
@@ -498,5 +378,15 @@ mod tests {
         assert!(tree.contains("defun:a"));
         assert!(tree.contains("defvar:b"));
         assert!(tree.contains("defconst:c"));
+    }
+
+    #[test]
+    fn documented_defvar_not_flagged() {
+        let warnings =
+            ElispPlugin::new().semantic_check("(defvar my-var 1 \"A documented var.\")\n");
+        assert!(
+            !warnings.iter().any(|w| w.contains("missing docstring")),
+            "documented defvar should not warn: {warnings:?}"
+        );
     }
 }
