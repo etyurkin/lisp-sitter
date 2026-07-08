@@ -298,6 +298,16 @@ Expose the same structural tools to Cursor, Claude Code, or any MCP client:
 
 All tools accept `write: true` to save in place. `structural_replace`, `structural_insert`, and `structural_format` accept `diff: true` to show a line-based diff before applying.
 
+### Hardening the MCP server
+
+The server acts on file paths chosen by the calling agent. Two environment
+variables let an operator constrain it:
+
+| Variable | Effect |
+|---|---|
+| `LISP_SITTER_ENABLE_EVAL` | `structural_eval` runs the file through a native interpreter (emacs/sbcl/guile) — arbitrary code execution. It is **disabled by default**; set to `1` to allow it. |
+| `LISP_SITTER_ROOT` | When set, every file read or written must resolve to a path inside this directory (symlinks and `..` are resolved first). Unset means no confinement. Set it to your project root to sandbox the server. |
+
 Install into Cursor (default) or Claude:
 
 ```bash
