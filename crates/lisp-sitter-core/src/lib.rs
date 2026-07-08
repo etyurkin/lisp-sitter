@@ -9,6 +9,7 @@ pub mod registry;
 pub mod scan;
 pub mod sexp_reader;
 pub mod sexp_scan;
+pub mod treesit_plugin;
 pub mod treesit_util;
 
 pub use anchors::{is_anchor_end, is_anchor_start, ANCHOR_END, ANCHOR_START};
@@ -22,5 +23,6 @@ pub use plugin::{FormInfo, LanguagePlugin, RefKind, SymbolRef};
 pub use position::{line_column, pos_label};
 pub use registry::Registry;
 pub use sexp_reader::{complete_form, complete_form_in, Dialect};
+pub use treesit_plugin::{DialectSpec, TreesitPlugin};
 pub use treesit_util::has_docstring;
 pub use treesit_util::DefFormInfo;
