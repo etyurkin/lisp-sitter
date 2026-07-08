@@ -504,7 +504,7 @@ fn rename_project_updates_definition_and_all_callers() {
     .unwrap();
     std::fs::write(&b, "(defun other ()\n  (helper 5))\n").unwrap();
 
-    let paths = ops::expand_paths(dir.to_str().unwrap());
+    let paths = ops::expand_paths(&reg, dir.to_str().unwrap());
     let changed = transform::rename_project(
         &reg,
         &paths,
@@ -548,7 +548,7 @@ fn rename_project_errors_when_symbol_undefined() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.el"), "(defun foo () 1)\n").unwrap();
 
-    let paths = ops::expand_paths(dir.to_str().unwrap());
+    let paths = ops::expand_paths(&reg, dir.to_str().unwrap());
     let r = transform::rename_project(
         &reg,
         &paths,
@@ -579,7 +579,7 @@ fn analyze_reports_unused_arity_and_unresolved() {
     )
     .unwrap();
 
-    let paths = ops::expand_paths(dir.to_str().unwrap());
+    let paths = ops::expand_paths(&reg, dir.to_str().unwrap());
     let report =
         lisp_sitter::analyze::analyze(&reg, &paths, lisp_sitter::analyze::Options::all()).unwrap();
     assert!(
@@ -616,7 +616,7 @@ fn analyze_suppresses_autoloaded_and_required() {
     )
     .unwrap();
 
-    let paths = ops::expand_paths(dir.to_str().unwrap());
+    let paths = ops::expand_paths(&reg, dir.to_str().unwrap());
     let report =
         lisp_sitter::analyze::analyze(&reg, &paths, lisp_sitter::analyze::Options::all()).unwrap();
     assert!(
@@ -633,7 +633,7 @@ fn analyze_suppresses_autoloaded_and_required() {
     )
     .unwrap();
 
-    let paths2 = ops::expand_paths(dir.to_str().unwrap());
+    let paths2 = ops::expand_paths(&reg, dir.to_str().unwrap());
     let report2 =
         lisp_sitter::analyze::analyze(&reg, &paths2, lisp_sitter::analyze::Options::all()).unwrap();
     assert!(

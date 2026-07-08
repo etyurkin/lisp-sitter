@@ -60,6 +60,16 @@ impl<'a> LineIndex<'a> {
     }
 }
 
+pub fn error_at(content: &str, pos: usize, message: impl AsRef<str>) -> String {
+    let (line, col) = line_column(content, pos);
+    format!("line {line}, column {col}: {}", message.as_ref())
+}
+
+pub fn pos_label(content: &str, pos: usize, label: &str) -> String {
+    let (line, col) = line_column(content, pos);
+    format!("{label}@{line}:{col}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{line_column, LineIndex};
@@ -86,14 +96,4 @@ mod tests {
             }
         }
     }
-}
-
-pub fn error_at(content: &str, pos: usize, message: impl AsRef<str>) -> String {
-    let (line, col) = line_column(content, pos);
-    format!("line {line}, column {col}: {}", message.as_ref())
-}
-
-pub fn pos_label(content: &str, pos: usize, label: &str) -> String {
-    let (line, col) = line_column(content, pos);
-    format!("{label}@{line}:{col}")
 }

@@ -31,7 +31,7 @@ pub fn eval(path: &str) -> Result<()> {
 }
 
 pub fn check(reg: &Registry, path: &str) -> Result<()> {
-    for p in ops::expand_paths(path) {
+    for p in ops::expand_paths(reg, path) {
         let msg = ops::check_structural_file(reg, &p)?;
         if msg == check_ok() {
             println!("{p}: OK");
@@ -44,7 +44,7 @@ pub fn check(reg: &Registry, path: &str) -> Result<()> {
 }
 
 pub fn check_semantic(reg: &Registry, path: &str) -> Result<()> {
-    for p in ops::expand_paths(path) {
+    for p in ops::expand_paths(reg, path) {
         let msg = ops::check_semantic(reg, &p)?;
         if msg.starts_with("OK") {
             println!("{p}: {msg}");
