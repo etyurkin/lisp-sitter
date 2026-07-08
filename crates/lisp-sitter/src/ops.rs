@@ -57,24 +57,37 @@ pub fn resolve_plugin<'a>(
     }
 }
 
+/// Best-effort content sniffing when the extension doesn't resolve. Checks
+/// *dialect-distinctive* forms first (so a Common Lisp file that also uses the
+/// shared `defun`/`defvar` isn't misclassified as elisp), then falls back to
+/// the shared markers, which lean elisp.
 pub fn detect_language(content: &str) -> Option<&'static str> {
-    if content.contains("(defun ")
+    // Distinctive of Common Lisp.
+    if content.contains("(defpackage ")
+        || content.contains("(in-package ")
+        || content.contains("(defclass ")
+        || content.contains("(defgeneric ")
+        || content.contains("(defmethod ")
+        || content.contains("(defparameter ")
+        || content.contains("(defconstant ")
+    {
+        Some("commonlisp")
+    // Distinctive of Scheme.
+    } else if content.contains("(define-library ")
+        || content.contains("(library ")
+        || content.contains("(define-record-type ")
+    {
+        Some("scheme")
+    // Shared / elisp-leaning markers.
+    } else if content.contains("(defun ")
         || content.contains("(defvar ")
         || content.contains("(provide ")
         || content.contains("(defmacro ")
+        || content.contains("(defcustom ")
+        || content.contains("(define-minor-mode ")
     {
         Some("elisp")
-    } else if content.contains("(defclass ")
-        || content.contains("(defgeneric ")
-        || content.contains("(defmethod ")
-        || content.contains("(in-package ")
-    {
-        Some("commonlisp")
-    } else if content.contains("(define ")
-        || content.contains("(define-syntax ")
-        || content.contains("(define-library ")
-        || content.contains("(library ")
-    {
+    } else if content.contains("(define ") || content.contains("(define-syntax ") {
         Some("scheme")
     } else {
         None
@@ -649,6 +662,15 @@ mod tests {
             Some("scheme")
         );
         assert_eq!(detect_language("(library (foo) ...)"), Some("scheme"));
+    }
+
+    #[test]
+    fn test_detect_language_cl_with_defun() {
+        // A Common Lisp file that also uses `defun` must not be seen as elisp.
+        assert_eq!(
+            detect_language("(defpackage :app (:use :cl))\n(in-package :app)\n(defun f () 1)\n"),
+            Some("commonlisp")
+        );
     }
 
     #[test]
