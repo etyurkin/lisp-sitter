@@ -84,10 +84,10 @@ fn scan_list(content: &str, b: &[u8], open: usize, close: usize, d: Dialect, out
     };
 
     match head {
-        Some(h) if is_fn_def_head(h) => recurse(kids.get(3..).unwrap_or(&[]), out),
+        Some(h) if is_fn_def_head(h, d) => recurse(kids.get(3..).unwrap_or(&[]), out),
         Some("lambda") => recurse(kids.get(2..).unwrap_or(&[]), out),
         Some("define") => recurse(kids.get(2..).unwrap_or(&[]), out),
-        Some(h) if is_let_head(h) => {
+        Some(h) if is_let_head(h, d) => {
             if let Some(&(bs, be)) = kids.get(1) {
                 if b[bs] == b'(' {
                     for (vs, ve) in list_children(b, bs, be, d) {
@@ -103,18 +103,20 @@ fn scan_list(content: &str, b: &[u8], open: usize, close: usize, d: Dialect, out
     }
 }
 
-fn is_fn_def_head(h: &str) -> bool {
-    matches!(
-        h,
-        "defun" | "defsubst" | "defmacro" | "cl-defun" | "cl-defmacro"
-    )
+fn is_fn_def_head(h: &str, d: Dialect) -> bool {
+    if matches!(h, "defun" | "defmacro") {
+        return true;
+    }
+    // elisp-only definers; don't apply them to Scheme/CL.
+    d == Dialect::Elisp && matches!(h, "defsubst" | "cl-defun" | "cl-defmacro")
 }
 
-fn is_let_head(h: &str) -> bool {
-    matches!(
-        h,
-        "let" | "let*" | "letrec" | "letrec*" | "when-let" | "if-let" | "cl-flet" | "cl-labels"
-    )
+fn is_let_head(h: &str, d: Dialect) -> bool {
+    if matches!(h, "let" | "let*" | "letrec" | "letrec*") {
+        return true;
+    }
+    // elisp-only binding macros; don't apply them to Scheme/CL.
+    d == Dialect::Elisp && matches!(h, "when-let" | "if-let" | "cl-flet" | "cl-labels")
 }
 
 pub fn skip_ws_comments(b: &[u8], mut i: usize, end: usize) -> usize {
