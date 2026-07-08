@@ -163,7 +163,10 @@ Exit code `0` on success, `1` on error.
 Language is inferred from file extension. Override with `LISP_SITTER_LANG=elisp|commonlisp|scheme` or the `--lang` global flag.
 
 Custom extension mappings and project-specific definer macros can be set in
-`~/.lisp-sitter.json` or `~/.config/lisp-sitter/config.json`:
+`~/.config/lisp-sitter/config.json` or `~/.lisp-sitter.json` (or a path given by
+`LISP_SITTER_CONFIG`, which takes precedence). Configured extensions are honored
+by directory, glob, and project-wide operations, not just when a file is named
+directly:
 
 ```json
 {
