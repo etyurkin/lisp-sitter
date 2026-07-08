@@ -492,9 +492,15 @@ fn render(
     };
     findings.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut out = String::new();
+    // Findings are sorted by path, so reuse one line index across a file's runs.
+    let mut cur: Option<(&str, lisp_sitter_core::LineIndex)> = None;
     for (path, pos, msg) in findings.iter() {
-        let (line, col) = content_of(path)
-            .map(|c| lisp_sitter_core::line_column(c, *pos))
+        if cur.as_ref().map(|(p, _)| *p) != Some(path.as_str()) {
+            cur = content_of(path).map(|c| (path.as_str(), lisp_sitter_core::LineIndex::new(c)));
+        }
+        let (line, col) = cur
+            .as_ref()
+            .map(|(_, ix)| ix.locate(*pos))
             .unwrap_or((0, 0));
         out.push_str(&format!("{path}:{line}:{col}: {msg}\n"));
     }
