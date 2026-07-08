@@ -39,6 +39,32 @@ struct CallEdge {
     call_pos: usize,
 }
 
+/// A resolved caller site: the enclosing definition that calls the target
+/// symbol, with its position. Produced by [`ProjectGraph::caller_sites`] so the
+/// text and JSON views (and single-file vs project) share one scanner.
+pub struct CallerSite {
+    pub path: String,
+    pub label: String,
+    pub start: usize,
+    pub line: usize,
+    pub col: usize,
+}
+
+impl CallerSite {
+    /// One display line. `with_path` prefixes the file path (project view);
+    /// otherwise the concise single-file form.
+    pub fn line(&self, sym: &str, with_path: bool) -> String {
+        if with_path {
+            format!(
+                "{}:{}@{}:{}: {} calls `{sym}`",
+                self.path, self.label, self.line, self.col, self.label
+            )
+        } else {
+            format!("{} calls {sym}@{}:{}", self.label, self.line, self.col)
+        }
+    }
+}
+
 /// Scan-on-demand call graph over a set of Lisp files.
 pub struct ProjectGraph {
     files: Vec<IndexedFile>,
@@ -153,20 +179,10 @@ impl ProjectGraph {
         self.form(edge.caller).name.as_deref() == Some(sym)
     }
 
-    fn format_caller(&self, form_idx: usize, sym: &str) -> String {
-        let form = self.form(form_idx);
-        let file = self.file(form.file_idx);
-        format!(
-            "{}:{}: {} calls `{sym}`",
-            file.path,
-            pos_label(&file.content, form.start, &form.label),
-            form.label
-        )
-    }
-
-    /// Direct callers of `sym` across the indexed files (excludes self-calls in
-    /// the definition body).
-    pub fn callers(&self, sym: &str) -> Vec<String> {
+    /// Direct callers of `sym` as structured sites (the single scanning path for
+    /// both single-file and project caller queries), excluding self-calls in the
+    /// definition body. Sorted by (path, position).
+    pub fn caller_sites(&self, sym: &str) -> Vec<CallerSite> {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for &ei in self.edges_calling(sym) {
@@ -174,12 +190,30 @@ impl ProjectGraph {
             if self.is_internal_call(edge, sym) {
                 continue;
             }
-            if seen.insert(edge.caller) {
-                out.push(self.format_caller(edge.caller, sym));
+            if !seen.insert(edge.caller) {
+                continue;
             }
+            let form = self.form(edge.caller);
+            let file = self.file(form.file_idx);
+            let (line, col) = line_column(&file.content, form.start);
+            out.push(CallerSite {
+                path: file.path.clone(),
+                label: form.label.clone(),
+                start: form.start,
+                line,
+                col,
+            });
         }
-        out.sort();
+        out.sort_by(|a, b| (a.path.as_str(), a.start).cmp(&(b.path.as_str(), b.start)));
         out
+    }
+
+    /// Direct callers of `sym`, formatted with a leading file path (project view).
+    pub fn callers(&self, sym: &str) -> Vec<String> {
+        self.caller_sites(sym)
+            .iter()
+            .map(|s| s.line(sym, true))
+            .collect()
     }
 
     /// Symbols called directly from the body of `sym`'s definition(s).
@@ -366,18 +400,24 @@ fn project_root(path: &str) -> PathBuf {
 }
 
 pub fn callers(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
-    if is_project_path(path) {
-        let paths = ops::expand_paths(reg, path);
-        let graph = ProjectGraph::build(reg, &paths)?;
-        let hits = graph.callers(sym);
-        if hits.is_empty() {
-            Ok(format!("No callers of `{sym}` found in indexed files"))
-        } else {
-            Ok(hits.join("\n"))
-        }
-    } else {
-        ops::callers(reg, path, sym)
+    let sites = caller_sites(reg, path, sym)?;
+    if sites.is_empty() {
+        return Ok(format!("No callers of `{sym}` found"));
     }
+    let with_path = is_project_path(path);
+    Ok(sites
+        .iter()
+        .map(|s| s.line(sym, with_path))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Structured caller sites for `path` (file, directory, or glob) — the shared
+/// query behind the text and JSON caller views.
+pub fn caller_sites(reg: &Registry, path: &str, sym: &str) -> Result<Vec<CallerSite>, Error> {
+    let paths = ops::expand_paths(reg, path);
+    let graph = ProjectGraph::build(reg, &paths)?;
+    Ok(graph.caller_sites(sym))
 }
 
 pub fn callees(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
