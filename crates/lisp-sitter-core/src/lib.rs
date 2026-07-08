@@ -3,6 +3,7 @@ pub mod definers;
 pub mod edit;
 pub mod error;
 pub mod fmt;
+pub mod form_scan;
 pub mod plugin;
 pub mod position;
 pub mod registry;
