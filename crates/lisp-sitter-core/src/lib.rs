@@ -20,7 +20,7 @@ pub use edit::{
 pub use error::{Error, Result};
 pub use fmt::{format_source, format_source_aligned, format_source_in};
 pub use plugin::{FormInfo, LanguagePlugin, RefKind, SymbolRef};
-pub use position::{line_column, pos_label};
+pub use position::{line_column, pos_label, LineIndex};
 pub use registry::Registry;
 pub use sexp_reader::{complete_form, complete_form_in, Dialect};
 pub use treesit_plugin::{DialectSpec, TreesitPlugin};

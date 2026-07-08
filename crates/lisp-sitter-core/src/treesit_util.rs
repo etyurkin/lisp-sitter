@@ -664,9 +664,10 @@ pub fn outline_lines(content: &str, forms: &[crate::FormInfo]) -> crate::Result<
         }
         return Ok("No forms".to_string());
     }
+    let index = crate::position::LineIndex::new(content);
     Ok(forms
         .iter()
-        .map(|f| crate::position::pos_label(content, f.start, &f.label))
+        .map(|f| index.label(f.start, &f.label))
         .collect::<Vec<_>>()
         .join("\n"))
 }

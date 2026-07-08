@@ -24,6 +24,10 @@ struct FormSite {
     file_idx: usize,
     start: usize,
     end: usize,
+    /// 1-based line range, precomputed at build time so diff overlap tests
+    /// don't rescan the file for every (changed line × form) pair.
+    start_line: usize,
+    end_line: usize,
     label: String,
     name: Option<String>,
 }
@@ -41,6 +45,10 @@ pub struct ProjectGraph {
     forms: Vec<FormSite>,
     defs_by_name: HashMap<String, Vec<usize>>,
     edges: Vec<CallEdge>,
+    /// Edge indices grouped by callee name / by caller form, so caller/callee/
+    /// impact queries don't linear-scan the whole edge list.
+    edges_by_callee: HashMap<String, Vec<usize>>,
+    edges_by_caller: HashMap<usize, Vec<usize>>,
 }
 
 fn canonical_path(path: &str) -> String {
@@ -69,22 +77,27 @@ impl ProjectGraph {
             };
 
             let file_idx = files.len();
-            let dialect = ops::dialect_for_id(plugin.id());
+            let dialect = plugin.dialect();
             files.push(IndexedFile {
                 path: canon,
                 content,
                 dialect,
             });
 
+            let index = lisp_sitter_core::LineIndex::new(&files[file_idx].content);
             for f in file_forms {
                 let idx = forms.len();
                 if let Some(ref name) = f.name {
                     defs_by_name.entry(name.clone()).or_default().push(idx);
                 }
+                let (start_line, _) = index.locate(f.start);
+                let (end_line, _) = index.locate(f.end.min(files[file_idx].content.len()));
                 forms.push(FormSite {
                     file_idx,
                     start: f.start,
                     end: f.end,
+                    start_line,
+                    end_line,
                     label: f.label,
                     name: f.name,
                 });
@@ -103,12 +116,29 @@ impl ProjectGraph {
             }
         }
 
+        let mut edges_by_callee: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut edges_by_caller: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (ei, e) in edges.iter().enumerate() {
+            edges_by_callee
+                .entry(e.callee.clone())
+                .or_default()
+                .push(ei);
+            edges_by_caller.entry(e.caller).or_default().push(ei);
+        }
+
         Ok(Self {
             files,
             forms,
             defs_by_name,
             edges,
+            edges_by_callee,
+            edges_by_caller,
         })
+    }
+
+    /// Edge indices whose callee is `name`.
+    fn edges_calling(&self, name: &str) -> &[usize] {
+        self.edges_by_callee.get(name).map_or(&[], |v| v.as_slice())
     }
 
     fn form(&self, idx: usize) -> &FormSite {
@@ -139,8 +169,9 @@ impl ProjectGraph {
     pub fn callers(&self, sym: &str) -> Vec<String> {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
-        for edge in &self.edges {
-            if edge.callee != sym || self.is_internal_call(edge, sym) {
+        for &ei in self.edges_calling(sym) {
+            let edge = &self.edges[ei];
+            if self.is_internal_call(edge, sym) {
                 continue;
             }
             if seen.insert(edge.caller) {
@@ -159,10 +190,9 @@ impl ProjectGraph {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for &form_idx in defs {
-            for edge in &self.edges {
-                if edge.caller != form_idx {
-                    continue;
-                }
+            let edge_ids = self.edges_by_caller.get(&form_idx).map_or(&[][..], |v| v);
+            for &ei in edge_ids {
+                let edge = &self.edges[ei];
                 if seen.insert(edge.callee.clone()) {
                     let file = self.file(self.form(form_idx).file_idx);
                     let (line, col) = line_column(&file.content, edge.call_pos);
@@ -261,8 +291,9 @@ impl ProjectGraph {
             let mut next_frontier = HashSet::new();
             let mut level: Vec<String> = Vec::new();
             for name in &frontier {
-                for edge in &self.edges {
-                    if edge.callee != *name || self.is_internal_call(edge, name) {
+                for &ei in self.edges_calling(name) {
+                    let edge = &self.edges[ei];
+                    if self.is_internal_call(edge, name) {
                         continue;
                     }
                     if !seen_forms.insert(edge.caller) {
@@ -307,18 +338,11 @@ impl ProjectGraph {
             .iter()
             .enumerate()
             .filter(|(_, f)| {
-                let file = self.file(f.file_idx);
-                file.path == path && line_in_range(&file.content, f.start, f.end, line)
+                self.file(f.file_idx).path == path && line >= f.start_line && line <= f.end_line
             })
             .map(|(i, _)| i)
             .collect()
     }
-}
-
-fn line_in_range(content: &str, start: usize, end: usize, line: usize) -> bool {
-    let (s, _) = line_column(content, start);
-    let (e, _) = line_column(content, end.min(content.len()));
-    line >= s && line <= e
 }
 
 fn is_project_path(path: &str) -> bool {
@@ -463,16 +487,46 @@ fn git_changed_files(root: &Path, base: &str) -> Result<Vec<(String, Vec<u32>)>,
             "invalid diff ref `{base}`: refs must not start with '-'"
         )));
     }
-    let names = run_git(root, &["diff", "--name-only", base, "--"])?;
+    // One diff for the whole tree, parsed per-file, instead of a subprocess per
+    // changed file.
+    let patch = run_git(root, &["diff", "-U0", base, "--"])?;
     let mut out = Vec::new();
-    for rel in names.lines().filter(|l| !l.trim().is_empty()) {
-        if !is_lisp_rel(rel) {
-            continue;
+    let mut current: Option<(String, Vec<u32>)> = None;
+    for line in patch.lines() {
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            if let Some(prev) = current.take() {
+                if is_lisp_rel(&prev.0) {
+                    out.push(prev);
+                }
+            }
+            current = Some((path.to_string(), Vec::new()));
+        } else if line.starts_with("@@") {
+            if let Some((_, lines)) = current.as_mut() {
+                lines.extend(hunk_added_lines(line));
+            }
         }
-        let patch = run_git(root, &["diff", "-U0", base, "--", rel])?;
-        out.push((rel.to_string(), changed_lines(&patch)));
+    }
+    if let Some(prev) = current {
+        if is_lisp_rel(&prev.0) {
+            out.push(prev);
+        }
     }
     Ok(out)
+}
+
+/// The added-side line numbers described by a single `@@ -a,b +c,d @@` hunk header.
+fn hunk_added_lines(hunk: &str) -> Vec<u32> {
+    let mut lines = Vec::new();
+    if let Some(plus) = hunk.split('+').nth(1) {
+        let span = plus.split([' ', '@']).next().unwrap_or("");
+        let mut parts = span.split(',');
+        let start: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let count: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+        for l in start..start + count.max(1) {
+            lines.push(l);
+        }
+    }
+    lines
 }
 
 fn is_lisp_rel(rel: &str) -> bool {
@@ -482,22 +536,6 @@ fn is_lisp_rel(rel: &str) -> bool {
         || rel.ends_with(".scm")
         || rel.ends_with(".ss")
         || rel.ends_with(".sld")
-}
-
-fn changed_lines(patch: &str) -> Vec<u32> {
-    let mut lines = Vec::new();
-    for hunk in patch.lines().filter(|l| l.starts_with("@@")) {
-        if let Some(plus) = hunk.split('+').nth(1) {
-            let span = plus.split([' ', '@']).next().unwrap_or("");
-            let mut parts = span.split(',');
-            let start: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-            let count: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1);
-            for l in start..start + count.max(1) {
-                lines.push(l);
-            }
-        }
-    }
-    lines
 }
 
 fn run_git(root: &Path, args: &[&str]) -> Result<String, Error> {
@@ -609,9 +647,8 @@ mod tests {
     }
 
     #[test]
-    fn changed_lines_parses_hunk() {
-        let patch = "@@ -1,2 +1,3 @@\n";
-        let lines = changed_lines(patch);
-        assert_eq!(lines, vec![1, 2, 3]);
+    fn hunk_added_lines_parses_header() {
+        assert_eq!(hunk_added_lines("@@ -1,2 +1,3 @@"), vec![1, 2, 3]);
+        assert_eq!(hunk_added_lines("@@ -5 +7 @@"), vec![7]);
     }
 }
