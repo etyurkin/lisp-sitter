@@ -42,7 +42,7 @@ pub fn resolve_plugin<'a>(
             .ok_or_else(|| Error::NoPlugin(id.to_string())),
         None => {
             if path == "-" {
-                return Err(Error::Message(
+                return Err(Error::InvalidArgs(
                     "provide --lang when reading from stdin".into(),
                 ));
             }
@@ -310,17 +310,17 @@ pub fn read_source(path: &str, allow_missing: bool) -> Result<String, Error> {
         let mut buf = String::new();
         std::io::stdin()
             .read_to_string(&mut buf)
-            .map_err(|e| Error::Message(format!("stdin: {e}")))?;
+            .map_err(|e| Error::Io(format!("stdin: {e}")))?;
         return Ok(buf);
     }
     check_confined(path)?;
     let p = Path::new(path);
     if p.exists() {
-        std::fs::read_to_string(p).map_err(|e| Error::Message(format!("read {path}: {e}")))
+        std::fs::read_to_string(p).map_err(|e| Error::Io(format!("read {path}: {e}")))
     } else if allow_missing && is_lisp_ext(path) {
         Ok(String::new())
     } else {
-        Err(Error::Message(format!("file not found: {path}")))
+        Err(Error::NotFound(path.to_string()))
     }
 }
 
@@ -339,7 +339,7 @@ pub fn read_file_or_new(path: &str) -> Result<String, Error> {
 
 pub fn atomic_write(path: &str, content: &str) -> Result<(), Error> {
     if path == "-" {
-        return Err(Error::Message(
+        return Err(Error::InvalidArgs(
             "cannot --write when reading from stdin".into(),
         ));
     }
@@ -348,7 +348,7 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), Error> {
     if let Some(parent) = p.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| Error::Message(format!("mkdir {}: {e}", parent.display())))?;
+                .map_err(|e| Error::Io(format!("mkdir {}: {e}", parent.display())))?;
         }
     }
     if p.exists() {
@@ -366,8 +366,8 @@ pub fn atomic_write(path: &str, content: &str) -> Result<(), Error> {
     n.push(format!(".{ts}.tmp"));
     let tmp = p.with_file_name(&n);
     std::fs::write(&tmp, content)
-        .map_err(|e| Error::Message(format!("write {}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, p).map_err(|e| Error::Message(format!("rename {}: {e}", p.display())))?;
+        .map_err(|e| Error::Io(format!("write {}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, p).map_err(|e| Error::Io(format!("rename {}: {e}", p.display())))?;
     Ok(())
 }
 
@@ -1053,7 +1053,7 @@ mod tests {
     fn test_resolve_plugin_stdin_requires_lang() {
         let reg = default_registry();
         let result = resolve_plugin(&reg, "-", None);
-        assert!(matches!(result, Err(Error::Message(msg)) if msg.contains("--lang")));
+        assert!(matches!(result, Err(Error::InvalidArgs(msg)) if msg.contains("--lang")));
     }
 
     #[test]

@@ -18,7 +18,7 @@ impl Runner for RealRunner {
     fn run(&self, cmd: &mut Command) -> Result<(String, String, bool), Error> {
         let output = cmd
             .output()
-            .map_err(|e| Error::Message(format!("failed to run evaluator: {e}")))?;
+            .map_err(|e| Error::Io(format!("failed to run evaluator: {e}")))?;
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let ok = output.status.success();
@@ -53,7 +53,7 @@ fn find_evaluator(path: &str) -> Result<Command, Error> {
         // string — a path containing `"` or `\` would otherwise break out of
         // the string literal and inject arbitrary elisp.
         let abs = std::fs::canonicalize(path)
-            .map_err(|e| Error::Message(format!("cannot resolve {path}: {e}")))?;
+            .map_err(|e| Error::Io(format!("cannot resolve {path}: {e}")))?;
         let mut cmd = Command::new("emacs");
         cmd.arg("--batch")
             .arg("-f")

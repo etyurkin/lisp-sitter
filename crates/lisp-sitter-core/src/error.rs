@@ -26,6 +26,19 @@ pub enum Error {
     #[error("SYNTAX ERROR after {operation} — {detail}")]
     SyntaxAfterEdit { operation: String, detail: String },
 
+    #[error("file not found: {0}")]
+    NotFound(String),
+
+    #[error("pattern not found: `{0}`")]
+    PatternNotFound(String),
+
+    #[error("{0}")]
+    InvalidArgs(String),
+
+    #[error("{0}")]
+    Io(String),
+
+    /// Genuinely miscellaneous errors that no caller distinguishes.
     #[error("{0}")]
     Message(String),
 
