@@ -87,9 +87,7 @@ impl TreesitPlugin {
     }
 
     fn parse(&self, content: &str) -> Option<Tree> {
-        with_cached_parser(self.spec.id(), &self.spec.language(), |p| {
-            p.parse(content, None)
-        })
+        parse_cached(self.spec.id(), &self.spec.language(), content)
     }
 
     fn has_parse_errors(&self, content: &str) -> bool {
@@ -247,25 +245,40 @@ impl LanguagePlugin for TreesitPlugin {
     }
 }
 
-/// Run `f` with a `Parser` configured for `language`, reusing a per-thread,
-/// per-language cached parser so we don't reconstruct it (and re-run
-/// `set_language`) on every parse.
-fn with_cached_parser<T>(
-    id: &'static str,
-    language: &Language,
-    f: impl FnOnce(&mut Parser) -> T,
-) -> T {
+/// Per-thread, per-language parse cache: a reusable `Parser` (so we don't
+/// rebuild it and re-run `set_language`) plus a memo of the most recent
+/// `(content, tree)`. A single logical edit calls several plugin methods on the
+/// same unchanged buffer (e.g. `check_file` then `node_bounds`); the memo lets
+/// those reuse one parse instead of re-parsing the identical content each time.
+struct ParserCache {
+    parser: Parser,
+    last: Option<(String, Tree)>,
+}
+
+/// Parse `content` for `language`, returning the memoized tree when `content`
+/// matches the last parse for this language on this thread.
+fn parse_cached(id: &'static str, language: &Language, content: &str) -> Option<Tree> {
     thread_local! {
-        static PARSERS: RefCell<HashMap<&'static str, Parser>> = RefCell::new(HashMap::new());
+        static CACHES: RefCell<HashMap<&'static str, ParserCache>> = RefCell::new(HashMap::new());
     }
-    PARSERS.with(|cell| {
+    CACHES.with(|cell| {
         let mut map = cell.borrow_mut();
-        let parser = map.entry(id).or_insert_with(|| {
+        let cache = map.entry(id).or_insert_with(|| {
             let mut p = Parser::new();
             p.set_language(language)
                 .expect("tree-sitter set_language failed");
-            p
+            ParserCache {
+                parser: p,
+                last: None,
+            }
         });
-        f(parser)
+        if let Some((last_content, tree)) = &cache.last {
+            if last_content == content {
+                return Some(tree.clone());
+            }
+        }
+        let tree = cache.parser.parse(content, None)?;
+        cache.last = Some((content.to_string(), tree.clone()));
+        Some(tree)
     })
 }
