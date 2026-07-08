@@ -13,6 +13,19 @@ fn ops_read(path: &str) -> Result<String, Error> {
 // bytes directly. `is_ascii_whitespace()` is false for any UTF-8 continuation
 // or lead byte, so a multi-byte symbol (e.g. `xà`) is never split mid-character
 // — the returned index always lands on a char boundary.
+/// Relabel a post-edit syntax error's operation name. The underlying
+/// `replace_node` / `insert_after` already validated the result, so when it is
+/// the last mutation we relabel its error instead of re-parsing to re-check.
+fn relabel_edit(e: Error, op: &str) -> Error {
+    match e {
+        Error::SyntaxAfterEdit { detail, .. } => Error::SyntaxAfterEdit {
+            operation: op.to_string(),
+            detail,
+        },
+        other => other,
+    }
+}
+
 fn skip_sp(bytes: &[u8], mut i: usize) -> usize {
     while i < bytes.len() && bytes[i].is_ascii_whitespace() {
         i += 1;
@@ -376,14 +389,7 @@ pub fn move_form(reg: &Registry, path: &str, sym: &str, after: &str) -> Result<S
     ensure_source_editable(p, &c)?;
     let ft = get_form_text(p, &c, sym)?.to_string();
     let removed = remove_form_content(p, &c, sym, true)?;
-    let ins = insert_after(p, &removed, after, ft.trim())?;
-    p.check_file(&ins).map_err(|e| match e {
-        Error::Syntax(d) => Error::SyntaxAfterEdit {
-            operation: "move".into(),
-            detail: d,
-        },
-        o => o,
-    })?;
+    let ins = insert_after(p, &removed, after, ft.trim()).map_err(|e| relabel_edit(e, "move"))?;
     Ok(ins)
 }
 
@@ -402,14 +408,7 @@ pub fn substitute(
     let (s, e) = find_sexp(p, ft, pat, p.dialect())
         .ok_or_else(|| Error::Message(format!("pattern not found: `{pat}`")))?;
     let nf = format!("{}{}{}", &ft[..s], rep, &ft[e..]);
-    let u = replace_node(p, &c, sym, &nf)?;
-    p.check_file(&u).map_err(|e| match e {
-        Error::Syntax(d) => Error::SyntaxAfterEdit {
-            operation: "substitute".into(),
-            detail: d,
-        },
-        o => o,
-    })?;
+    let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "substitute"))?;
     Ok(u)
 }
 
@@ -448,14 +447,7 @@ pub fn extract(
     let uf = format!("{}{}{}", &ft[..s], &call, &ft[e..]);
     let as_ = replace_node(p, &c, sym, &uf)?;
     let p2 = crate::ops::resolve_plugin(reg, path, None)?;
-    let ins = insert_after(p2, &as_, sym, &nd)?;
-    p2.check_file(&ins).map_err(|e| match e {
-        Error::Syntax(d) => Error::SyntaxAfterEdit {
-            operation: "extract".into(),
-            detail: d,
-        },
-        o => o,
-    })?;
+    let ins = insert_after(p2, &as_, sym, &nd).map_err(|e| relabel_edit(e, "extract"))?;
     Ok(ins)
 }
 
@@ -616,14 +608,7 @@ pub fn instrument(
     } else {
         return Err(Error::Message("provide --with or --at --wrap".into()));
     };
-    let u = replace_node(p, &c, sym, &nf)?;
-    p.check_file(&u).map_err(|e| match e {
-        Error::Syntax(d) => Error::SyntaxAfterEdit {
-            operation: "instrument".into(),
-            detail: d,
-        },
-        o => o,
-    })?;
+    let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "instrument"))?;
     Ok(u)
 }
 
@@ -990,14 +975,7 @@ pub fn splice(reg: &Registry, path: &str, sym: &str, pat: &str) -> Result<String
     }
     let inner = ft[after_open + head_end..e - 1].trim();
     let nf = format!("{}{}{}", &ft[..s], inner, &ft[e..]);
-    let u = replace_node(p, &c, sym, &nf)?;
-    p.check_file(&u).map_err(|e| match e {
-        Error::Syntax(d) => Error::SyntaxAfterEdit {
-            operation: "splice".into(),
-            detail: d,
-        },
-        o => o,
-    })?;
+    let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "splice"))?;
     Ok(u)
 }
 
@@ -1016,14 +994,7 @@ pub fn raise(reg: &Registry, path: &str, sym: &str, pat: &str) -> Result<String,
         .ok_or_else(|| Error::Message("raise: pattern has no enclosing form to replace".into()))?;
     let raised = ft[s..e].to_string();
     let nf = format!("{}{}{}", &ft[..ps], raised, &ft[pe..]);
-    let u = replace_node(p, &c, sym, &nf)?;
-    p.check_file(&u).map_err(|e| match e {
-        Error::Syntax(d) => Error::SyntaxAfterEdit {
-            operation: "raise".into(),
-            detail: d,
-        },
-        o => o,
-    })?;
+    let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "raise"))?;
     Ok(u)
 }
 
@@ -1121,14 +1092,7 @@ pub fn convert_let(reg: &Registry, path: &str, sym: &str, target: &str) -> Resul
     }
     let mut nf = ft.to_string();
     nf.replace_range(head..head + from.len(), to);
-    let u = replace_node(p, &c, sym, &nf)?;
-    p.check_file(&u).map_err(|e| match e {
-        Error::Syntax(d) => Error::SyntaxAfterEdit {
-            operation: "convert-let".into(),
-            detail: d,
-        },
-        o => o,
-    })?;
+    let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "convert-let"))?;
     Ok(u)
 }
 
