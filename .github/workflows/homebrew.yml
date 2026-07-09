@@ -1,0 +1,20 @@
+name: Homebrew
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  bump-formula:
+    name: Bump tap formula
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: lisp-sitter
+          formula-path: Formula/lisp-sitter.rb
+          homebrew-tap: etyurkin/homebrew-tap
+          download-url: https://github.com/etyurkin/lisp-sitter/archive/refs/tags/${{ github.event.release.tag_name }}.tar.gz
+          commit-message: "{{formulaName}} {{version}}"
+        env:
+          COMMITTER_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}

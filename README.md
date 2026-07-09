@@ -16,6 +16,16 @@ Language is inferred from the file extension.
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install etyurkin/tap/lisp-sitter
+```
+
+Installs the `lisp-sitter` binary and `lisp-sitter.el` (to `$(brew --prefix)/share/emacs/site-lisp/lisp-sitter`).
+
+### From source
+
 Requires Rust 1.70+ and a C compiler (for tree-sitter grammars).
 
 ```bash
