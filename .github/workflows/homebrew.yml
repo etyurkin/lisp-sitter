@@ -3,18 +3,33 @@ name: Homebrew
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to bump the formula to (e.g. v1.1.1)"
+        required: true
 
 jobs:
   bump-formula:
     name: Bump tap formula
     runs-on: ubuntu-latest
     steps:
-      - uses: mislav/bump-homebrew-formula-action@v3
-        with:
-          formula-name: lisp-sitter
-          formula-path: Formula/lisp-sitter.rb
-          homebrew-tap: etyurkin/homebrew-tap
-          download-url: https://github.com/etyurkin/lisp-sitter/archive/refs/tags/${{ github.event.release.tag_name }}.tar.gz
-          commit-message: "{{formulaName}} {{version}}"
+      - name: Update formula in etyurkin/homebrew-tap
         env:
-          COMMITTER_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          URL="https://github.com/etyurkin/lisp-sitter/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL -o release.tar.gz "$URL"
+          SHA=$(sha256sum release.tar.gz | cut -d' ' -f1)
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/etyurkin/homebrew-tap.git" tap
+          cd tap
+          sed -i -E "s|^(  url ).*|\1\"${URL}\"|" Formula/lisp-sitter.rb
+          sed -i -E "s|^(  sha256 ).*|\1\"${SHA}\"|" Formula/lisp-sitter.rb
+          git diff --exit-code --quiet && { echo "Formula already at ${VERSION}, nothing to do"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "lisp-sitter ${VERSION}"
+          git push
