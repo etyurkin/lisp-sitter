@@ -24,7 +24,11 @@ struct Cli {
         help = "Language override: elisp, commonlisp, scheme (or set LISP_SITTER_LANG env var)"
     )]
     lang: Option<String>,
-    #[arg(long, global = true, help = "Output machine-readable JSON")]
+    #[arg(
+        long,
+        global = true,
+        help = "Output machine-readable JSON (supported by tree and callers)"
+    )]
     json: bool,
     #[arg(long, global = true, help = "Show diff and prompt before writing")]
     confirm: bool,
@@ -36,7 +40,7 @@ enum Command {
     /// Examples:
     ///   lisp-sitter tree foo.el
     ///   lisp-sitter tree foo.el --depth 2
-    ///   lisp-sitter tree "src/**/*.el" --batch
+    ///   lisp-sitter tree "src/**/*.el"
     Tree {
         path: String,
         #[arg(long, default_value = "1")]
@@ -253,7 +257,10 @@ enum Command {
         write: bool,
     },
     /// Inline all call sites of a function with its body and remove the definition.
-    /// Example: lisp-sitter flatten foo.el helper --write
+    /// PATH may be a file, directory, or glob for a project-wide flatten.
+    /// Examples:
+    ///   lisp-sitter flatten foo.el helper --write
+    ///   lisp-sitter flatten src/ helper --write
     Flatten {
         path: String,
         symbol: String,
@@ -293,6 +300,30 @@ enum Command {
         symbol: String,
         #[arg(long)]
         pattern: String,
+        #[arg(long)]
+        write: bool,
+    },
+    /// Paredit slurp: absorb an adjacent sibling into the matched list.
+    /// Example: lisp-sitter slurp foo.el my-func --pattern '(list a)' --dir forward
+    Slurp {
+        path: String,
+        symbol: String,
+        #[arg(long)]
+        pattern: String,
+        #[arg(long, default_value = "forward")]
+        dir: String,
+        #[arg(long)]
+        write: bool,
+    },
+    /// Paredit barf: eject an edge element of the matched list as a sibling.
+    /// Example: lisp-sitter barf foo.el my-func --pattern '(list a b)' --dir forward
+    Barf {
+        path: String,
+        symbol: String,
+        #[arg(long)]
+        pattern: String,
+        #[arg(long, default_value = "forward")]
+        dir: String,
         #[arg(long)]
         write: bool,
     },
@@ -409,19 +440,32 @@ async fn run(cli: Cli) -> Result<()> {
     let cf = cli.confirm;
     match cli.command {
         Command::Tree { path, depth, all } => {
-            if j {
-                let c = lisp_sitter::ops::read_file(&path)?;
-                let p = lisp_sitter::ops::resolve_plugin(&reg, &path, None)?;
-                println!("{}", serde_json::to_string_pretty(&p.list_forms(&c)?)?);
-            } else if all {
-                println!(
-                    "{}",
-                    lisp_sitter::ops::tree_depth(&reg, &path, depth.saturating_sub(1))?
-                );
-            } else if depth > 1 {
-                println!("{}", lisp_sitter::ops::tree_depth(&reg, &path, depth)?);
-            } else {
-                println!("{}", lisp_sitter::ops::tree(&reg, &path)?);
+            let paths = lisp_sitter::ops::expand_paths(&reg, &path);
+            if paths.is_empty() {
+                anyhow::bail!("no matching Lisp files: {path}");
+            }
+            let multi = paths.len() > 1;
+            for (i, p) in paths.iter().enumerate() {
+                if multi {
+                    if i > 0 {
+                        println!();
+                    }
+                    println!("== {p} ==");
+                }
+                if j {
+                    let c = lisp_sitter::ops::read_file(p)?;
+                    let plugin = lisp_sitter::ops::resolve_plugin(&reg, p, None)?;
+                    println!("{}", serde_json::to_string_pretty(&plugin.list_forms(&c)?)?);
+                } else if all {
+                    println!(
+                        "{}",
+                        lisp_sitter::ops::tree_depth(&reg, p, depth.saturating_sub(1))?
+                    );
+                } else if depth > 1 {
+                    println!("{}", lisp_sitter::ops::tree_depth(&reg, p, depth)?);
+                } else {
+                    println!("{}", lisp_sitter::ops::tree(&reg, p)?);
+                }
             }
         }
         Command::Bounds {
@@ -520,29 +564,55 @@ async fn run(cli: Cli) -> Result<()> {
             diff,
             align,
         } => {
-            let content = lisp_sitter::ops::read_file(&path)?;
-            let f = if align {
-                lisp_sitter_core::format_source_aligned(&content)
-            } else {
-                lisp_sitter::ops::format_content(&content, &reg, &path)?
-            };
-            if diff || cf {
-                let d = lisp_sitter::ops::diff_text(&content, &f, &path);
-                if !d.is_empty() {
-                    eprint!("{d}");
-                }
+            let paths = lisp_sitter::ops::expand_paths(&reg, &path);
+            if paths.is_empty() {
+                anyhow::bail!("no matching Lisp files: {path}");
             }
-            if cf {
+            let multi = paths.len() > 1;
+            if cf && write {
+                for p in &paths {
+                    let content = lisp_sitter::ops::read_file(p)?;
+                    let f = if align {
+                        lisp_sitter_core::format_source_aligned(&content)
+                    } else {
+                        lisp_sitter::ops::format_content(&content, &reg, p)?
+                    };
+                    let d = lisp_sitter::ops::diff_text(&content, &f, p);
+                    if !d.is_empty() {
+                        eprint!("{d}");
+                    }
+                }
                 confirm_or_abort();
             }
-            if write {
-                let p = lisp_sitter::ops::resolve_plugin(&reg, &path, None)?;
-                lisp_sitter_core::edit::ensure_source_editable(p, &content)?;
-                p.check_file(&f)?;
-                lisp_sitter::ops::atomic_write(&path, &f)?;
-                println!("Wrote {path}");
-            } else {
-                print!("{f}");
+            for (i, p) in paths.iter().enumerate() {
+                let content = lisp_sitter::ops::read_file(p)?;
+                let f = if align {
+                    lisp_sitter_core::format_source_aligned(&content)
+                } else {
+                    lisp_sitter::ops::format_content(&content, &reg, p)?
+                };
+                // Skip when --confirm already printed diffs before the write loop.
+                if (diff || cf) && !(cf && write) {
+                    let d = lisp_sitter::ops::diff_text(&content, &f, p);
+                    if !d.is_empty() {
+                        eprint!("{d}");
+                    }
+                }
+                if write {
+                    let plugin = lisp_sitter::ops::resolve_plugin(&reg, p, None)?;
+                    lisp_sitter_core::edit::ensure_source_editable(plugin, &content)?;
+                    plugin.check_file(&f)?;
+                    lisp_sitter::ops::atomic_write(p, &f)?;
+                    println!("Wrote {p}");
+                } else {
+                    if multi {
+                        if i > 0 {
+                            println!();
+                        }
+                        println!("== {p} ==");
+                    }
+                    print!("{f}");
+                }
             }
         }
         Command::Eval { path } => {
@@ -641,8 +711,53 @@ async fn run(cli: Cli) -> Result<()> {
             keep_calls,
             write,
         } => {
-            let u = lisp_sitter::transform::remove_form(&reg, &path, &symbol, keep_calls)?;
-            finish_edit(&path, &u, write, cf)?;
+            let paths = lisp_sitter::ops::expand_paths(&reg, &path);
+            if paths.is_empty() {
+                anyhow::bail!("no matching Lisp files: {path}");
+            }
+            let multi = paths.len() > 1
+                || std::path::Path::new(&path).is_dir()
+                || path.contains('*')
+                || path.contains('?');
+            if !multi {
+                let u = lisp_sitter::transform::remove_form(&reg, &path, &symbol, keep_calls)?;
+                finish_edit(&path, &u, write, cf)?;
+            } else {
+                let mut changed = Vec::new();
+                for p in &paths {
+                    match lisp_sitter::transform::remove_form(&reg, p, &symbol, keep_calls) {
+                        Ok(u) => changed.push((p.clone(), u)),
+                        Err(lisp_sitter_core::Error::FormNotFound(_)) => continue,
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                if changed.is_empty() {
+                    return Err(lisp_sitter_core::Error::FormNotFound(symbol).into());
+                }
+                if write {
+                    if cf {
+                        for (p, u) in &changed {
+                            if let Ok(orig) = lisp_sitter::ops::read_file(p) {
+                                eprint!("{}", lisp_sitter::ops::diff_text(&orig, u, p));
+                            }
+                        }
+                        confirm_or_abort();
+                    }
+                    for (p, u) in &changed {
+                        lisp_sitter::ops::atomic_write(p, u)?;
+                        println!("Wrote {p}");
+                    }
+                } else {
+                    for (p, u) in &changed {
+                        let orig = lisp_sitter::ops::read_file(p)?;
+                        eprint!("{}", lisp_sitter::ops::diff_text(&orig, u, p));
+                    }
+                    println!(
+                        "{} file(s) would change (use --write to apply)",
+                        changed.len()
+                    );
+                }
+            }
         }
         Command::Move {
             path,
@@ -755,8 +870,38 @@ async fn run(cli: Cli) -> Result<()> {
             symbol,
             write,
         } => {
-            let u = lisp_sitter::transform::flatten(&reg, &path, &symbol)?;
-            finish_edit(&path, &u, write, cf)?;
+            let multi =
+                std::path::Path::new(&path).is_dir() || path.contains('*') || path.contains('?');
+            if multi {
+                let paths = lisp_sitter::ops::expand_paths(&reg, &path);
+                let changed = lisp_sitter::transform::flatten_project(&reg, &paths, &symbol)?;
+                if write {
+                    if cf {
+                        for (p, c) in &changed {
+                            if let Ok(orig) = lisp_sitter::ops::read_file(p) {
+                                eprint!("{}", lisp_sitter::ops::diff_text(&orig, c, p));
+                            }
+                        }
+                        confirm_or_abort();
+                    }
+                    for (p, c) in &changed {
+                        lisp_sitter::ops::atomic_write(p, c)?;
+                        println!("Wrote {p}");
+                    }
+                } else {
+                    for (p, c) in &changed {
+                        let orig = lisp_sitter::ops::read_file(p)?;
+                        eprint!("{}", lisp_sitter::ops::diff_text(&orig, c, p));
+                    }
+                    println!(
+                        "{} file(s) would change (use --write to apply)",
+                        changed.len()
+                    );
+                }
+            } else {
+                let u = lisp_sitter::transform::flatten(&reg, &path, &symbol)?;
+                finish_edit(&path, &u, write, cf)?;
+            }
         }
         Command::ConvertLet {
             path,
@@ -789,6 +934,28 @@ async fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let u = lisp_sitter::transform::raise(&reg, &path, &symbol, &pattern)?;
+            finish_edit(&path, &u, write, cf)?;
+        }
+        Command::Slurp {
+            path,
+            symbol,
+            pattern,
+            dir,
+            write,
+        } => {
+            let d = lisp_sitter::transform::Direction::parse(&dir)?;
+            let u = lisp_sitter::transform::slurp(&reg, &path, &symbol, &pattern, d)?;
+            finish_edit(&path, &u, write, cf)?;
+        }
+        Command::Barf {
+            path,
+            symbol,
+            pattern,
+            dir,
+            write,
+        } => {
+            let d = lisp_sitter::transform::Direction::parse(&dir)?;
+            let u = lisp_sitter::transform::barf(&reg, &path, &symbol, &pattern, d)?;
             finish_edit(&path, &u, write, cf)?;
         }
         Command::Analyze {

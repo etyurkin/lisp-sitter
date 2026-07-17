@@ -184,8 +184,9 @@ pub fn split_elements(ft: &str, d: Dialect) -> Vec<(usize, usize)> {
     elems
 }
 
-/// Wrap multiple body forms into one expression (`progn`/`begin`) if needed.
-pub fn wrap_multi_body(body_text: &str, d: Dialect) -> String {
+/// Wrap multiple body forms into one expression if needed.
+/// `seq_kw` is the dialect sequencing form (`progn` or `begin`).
+pub fn wrap_multi_body(body_text: &str, d: Dialect, seq_kw: &str) -> String {
     let b = body_text.as_bytes();
     let mut i = 0;
     let mut count = 0;
@@ -205,12 +206,7 @@ pub fn wrap_multi_body(body_text: &str, d: Dialect) -> String {
     if count <= 1 {
         body_text.trim().to_string()
     } else {
-        let kw = if d == Dialect::Generic {
-            "begin"
-        } else {
-            "progn"
-        };
-        format!("({kw} {})", body_text.trim())
+        format!("({seq_kw} {})", body_text.trim())
     }
 }
 

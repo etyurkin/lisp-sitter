@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach binaries to (e.g. v1.1.1)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: lisp-sitter
+            archive_ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: lisp-sitter
+            archive_ext: tar.gz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            bin: lisp-sitter
+            archive_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: lisp-sitter.exe
+            archive_ext: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release -p lisp-sitter
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          ARCHIVE="lisp-sitter-${TAG}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          mkdir -p dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # tar on Windows runners can write zip archives.
+            tar.exe -acf "dist/${ARCHIVE}" -C target/release "${{ matrix.bin }}"
+          else
+            strip "target/release/${{ matrix.bin }}" || true
+            tar -czf "dist/${ARCHIVE}" -C target/release "${{ matrix.bin }}"
+          fi
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+          ls -la "dist/${ARCHIVE}"
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          gh release upload "$TAG" "dist/${ARCHIVE}" --clobber

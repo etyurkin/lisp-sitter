@@ -447,16 +447,47 @@ pub fn expand_paths(reg: &Registry, path: &str) -> Vec<String> {
 /// matching. `**` matches zero or more directory levels; `*`/`?` stay within
 /// one component.
 fn glob_expand(pattern: &str) -> Vec<String> {
-    let is_abs = pattern.starts_with('/');
-    let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-    let start = if is_abs {
-        std::path::PathBuf::from("/")
-    } else {
-        std::path::PathBuf::from(".")
-    };
+    let pattern = pattern.replace('\\', "/");
+    let (start, segments) = glob_root_and_segments(&pattern);
     let mut out = Vec::new();
+    if segments.is_empty() {
+        if start.is_file() {
+            out.push(clean_path(&start));
+        }
+        return out;
+    }
     glob_walk(&start, &segments, &mut out);
     out
+}
+
+/// Split a glob into a literal directory prefix and remaining glob segments.
+/// Walking from a drive root is unreliable on restricted Windows environments,
+/// so start at the deepest non-glob ancestor instead.
+fn glob_root_and_segments(pattern: &str) -> (std::path::PathBuf, Vec<&str>) {
+    let (mut start, parts): (std::path::PathBuf, Vec<&str>) =
+        if pattern.len() >= 2 && pattern.as_bytes().get(1) == Some(&b':') {
+            let drive = &pattern[..2];
+            let rest = pattern[2..].trim_start_matches('/');
+            let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+            (std::path::PathBuf::from(format!("{drive}/")), parts)
+        } else if pattern.starts_with('/') {
+            let parts: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+            (std::path::PathBuf::from("/"), parts)
+        } else {
+            let parts: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+            (std::path::PathBuf::from("."), parts)
+        };
+
+    let mut first_glob = 0;
+    while first_glob < parts.len() {
+        let seg = parts[first_glob];
+        if seg.contains('*') || seg.contains('?') {
+            break;
+        }
+        start.push(seg);
+        first_glob += 1;
+    }
+    (start, parts[first_glob..].to_vec())
 }
 
 fn glob_walk(dir: &Path, segments: &[&str], out: &mut Vec<String>) {
@@ -745,6 +776,21 @@ mod tests {
     fn test_check_missing_file_errors() {
         let reg = default_registry();
         assert!(check_structural_file(&reg, "/nonexistent/missing.el").is_err());
+    }
+
+    #[test]
+    fn test_glob_backslash_separators() {
+        let dir = test_dir("glob_bs");
+        std::fs::write(dir.join("a.el"), "(defun a ())\n").unwrap();
+        let base = dir.to_str().unwrap().replace('/', "\\");
+        let pat = format!("{}\\*.el", base);
+        let got = expand_paths(&default_registry(), &pat);
+        assert_eq!(
+            got.len(),
+            1,
+            "backslash separators must expand: {pat} -> {got:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

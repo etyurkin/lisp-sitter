@@ -41,11 +41,12 @@ fn claude_desktop_path() -> Result<PathBuf> {
 }
 
 fn dirs_home() -> Result<PathBuf> {
-    // LISP_SITTER_HOME overrides HOME for testing
+    // LISP_SITTER_HOME overrides the OS home for testing.
     std::env::var_os("LISP_SITTER_HOME")
         .or_else(|| std::env::var_os("HOME"))
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-        .context("$HOME is not set")
+        .context("home directory is not set (HOME/USERPROFILE)")
 }
 
 fn merge_mcp_file(path: &Path, name: &str, entry: &Value) -> Result<()> {

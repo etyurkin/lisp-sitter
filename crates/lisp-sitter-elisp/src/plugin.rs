@@ -126,6 +126,10 @@ fn is_elisp_global(name: &str) -> bool {
             "if",
             "when",
             "unless",
+            "when-let",
+            "when-let*",
+            "if-let",
+            "if-let*",
             "cond",
             "and",
             "or",
@@ -272,6 +276,13 @@ fn is_elisp_global(name: &str) -> bool {
             "string-match",
             "string-prefix-p",
             "string-suffix-p",
+            "string-empty-p",
+            "string-blank-p",
+            "string-search",
+            "string-replace",
+            "downcase",
+            "upcase",
+            "capitalize",
             "split-string",
             "string-join",
             "string-trim",
@@ -355,6 +366,21 @@ mod tests {
     fn insert_at_start() {
         let updated =
             insert_after(&ElispPlugin::new(), "", "__start__", "(defun first () 1)").unwrap();
+        let nonempty = insert_after(
+            &ElispPlugin::new(),
+            "(defun existing () 0)\n",
+            "__start__",
+            "(defun first () 1)",
+        )
+        .unwrap();
+        assert!(
+            nonempty.starts_with("(defun first () 1)"),
+            "__start__ on nonempty should prepend: {nonempty}"
+        );
+        assert!(
+            nonempty.contains("(defun existing () 0)"),
+            "existing form must remain: {nonempty}"
+        );
         assert!(updated.contains("defun first"));
     }
 

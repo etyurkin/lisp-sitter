@@ -77,7 +77,7 @@ lisp-sitter check-node --lang scheme --body '(define x 1)'
 
 | Anchor | Meaning |
 |--------|---------|
-| `__start__` | Insert as the first form (empty file only) |
+| `__start__` | Insert as the first form (before existing forms; also works on nonempty files) |
 | `__end__` | Append after the last top-level form |
 | *symbol* | Insert immediately after the named form |
 
@@ -128,7 +128,16 @@ lisp-sitter completions fish | source    # fish
 | `substitute PATH SYMBOL` | Replace a sub-expression inside a form using `--pattern` / `--replacement` |
 | `extract PATH SYMBOL` | Extract a sub-expression into a new function |
 | `rename PATH OLD NEW` | Rename a form, its call sites, and `#'old`/`'old` references. `PATH` may be a file, directory, or glob for a **project-wide** rename (definition + every reference across all matching files). `--refs` also renames plain `'old`; `--no-refs` renames only head-position call sites |
-| `wrap PATH SYMBOL` | Wrap body in `progn`, `let`, or `if` |
+| `wrap PATH SYMBOL` | Wrap body in `progn`/`begin`, `let`, or `if` (dialect-aware) |
+| `instrument PATH SYMBOL` | Trace a form body (`--with FORM`) or wrap a sub-expression (`--at` / `--wrap`) |
+| `flatten PATH SYMBOL` | Inline all call sites of a simple positional function and remove the definition. `PATH` may be a file, directory, or glob |
+| `convert-let PATH SYMBOL --to let\|let*` | Convert the first `let`/`let*` binding form inside a definition |
+| `splice PATH SYMBOL --pattern …` | Paredit splice: dissolve a wrapper list (drops head + parens) |
+| `raise PATH SYMBOL --pattern …` | Paredit raise: replace the enclosing list with the matched sub-expression |
+| `slurp PATH SYMBOL --pattern …` | Paredit slurp: absorb an adjacent sibling (`--dir forward\|backward`) |
+| `barf PATH SYMBOL --pattern …` | Paredit barf: eject an edge list element (`--dir forward\|backward`) |
+| `find-errors PATH` | List tree-sitter `MISSING`/`ERROR` nodes (unbalanced parens, etc.) |
+| `context PATH` | Outline plus full text of each top-level form |
 | `analyze PATH` | Project-wide semantic analysis over a directory or glob: unused definitions, unresolved calls, and arity mismatches. `--unused` / `--unresolved` / `--arity` to run a subset (default: all) |
 | `callers PATH SYMBOL` | Callers of a symbol. Single file, or project-wide when `PATH` is a directory/glob |
 | `callees PATH SYMBOL` | Symbols called directly from a definition's body across `PATH` |
@@ -138,12 +147,13 @@ lisp-sitter completions fish | source    # fish
 | `check PATH` | Validate file → `OK` or syntax error on stderr |
 | `check PATH --semantic` | Deep validation — docstrings, missing `provide`/`in-package`/library export warnings (elisp, commonlisp, scheme) |
 | `check-node` | Validate one form; `--lang elisp\|commonlisp\|scheme` |
+| `init-git-hook` | Install a repo pre-commit hook that runs `lisp-sitter check` on staged Lisp files |
 | `mcp serve` | Run MCP server on stdio |
 | `mcp install` | Add server to `~/.cursor/mcp.json` (or `--claude-code`, `--claude-desktop`) |
 
-`replace`, `insert`, `fmt`, `remove`, `move`, `substitute`, `extract`, `rename`, and `wrap` print the updated file to stdout unless `--write` is set. With `--write`, they atomically replace the file and print `OK`.
+Mutating commands (`replace`, `insert`, `fmt`, `remove`, `move`, `substitute`, `extract`, `rename`, `wrap`, `instrument`, `flatten`, `convert-let`, `splice`, `raise`) print the updated file to stdout unless `--write` is set. With `--write`, they atomically replace the file and print `Wrote PATH`.
 
-`tree`, `replace`, `insert`, and `fmt` accept `--diff` to show a line-based diff on stderr. `tree` accepts `--depth N` for sub-form navigation:
+`replace`, `insert`, and `fmt` accept `--diff` to show a line-based diff on stderr. `tree` accepts `--depth N` for sub-form navigation:
 
 ```bash
 lisp-sitter tree src/foo.el --depth 2
@@ -152,12 +162,15 @@ lisp-sitter tree src/foo.el --depth 2
 # →   if:condition@18:3
 ```
 
-File arguments accept glob patterns and directories for batch operations:
+Directory and glob paths expand for `tree`, `fmt`, `check`, `remove`, `rename`, `flatten`, `analyze`, and the call-graph commands (`callers` / `callees` / `explore` / `impact` / `diff`):
 ```bash
 lisp-sitter check "src/**/*.el"
-lisp-sitter fmt lib/
+lisp-sitter tree lib/
+lisp-sitter fmt lib/ --write
 lisp-sitter remove "*.lisp" dead-func --write
 ```
+
+Global `--json` currently emits machine-readable output for `tree` and `callers`.
 
 Exit code `0` on success, `1` on error.
 
@@ -252,9 +265,14 @@ the command line.
 | `C-c s g` | `lisp-sitter-get` | Show the text of a form |
 | `C-c s r` | `lisp-sitter-replace-defun` | Re-validate and rewrite the form at point |
 | `C-c s R` | `lisp-sitter-rename` | Rename a symbol (`C-u` for project-wide) |
+| `C-c s s` | `lisp-sitter-substitute` | Substitute a sub-expression |
+| `C-c s w` / `X` / `m` / `d` / `i` | wrap / extract / move / remove / insert | Structural edits |
+| `C-c s F` / `S` / `^` / `>` / `<` | flatten / splice / raise / slurp / barf | Inline + paredit |
+| `C-c s C` / `E` / `I` | callers / explore / impact | Call graph (`C-u` for project) |
 | `C-c s f` | `lisp-sitter-format-buffer` | Re-indent the file |
 | `C-c s c` | `lisp-sitter-check` | Validate the file |
 | `C-c s a` | `lisp-sitter-analyze` | Semantic analysis (`C-u` for project-wide) |
+| `C-c s .` | `lisp-sitter-dispatch` | Transient menu of all commands |
 
 ## Agent workflow
 
@@ -286,19 +304,27 @@ Expose the same structural tools to Cursor, Claude Code, or any MCP client:
 |------|-------------|
 | `check_structural_file` | Validate a whole file (with `semantic: true` for deep checks) |
 | `check_structural_node` | Validate one top-level form |
-| `structural_tree` | Outline of top-level forms (`depth` for sub-forms) |
+| `structural_tree` | Outline of top-level forms (`depth` for sub-forms; `all: true` for non-definitions) |
 | `structural_bounds` | Byte range `START:END` for a symbol |
 | `structural_get` | Full text of a named form |
 | `structural_context` | Complete structural context: tree + bounds + full text |
-| `structural_replace` | Replace a form (validates and saves) |
-| `structural_insert` | Insert after `__start__`, `__end__`, or a symbol |
+| `structural_find_errors` | List tree-sitter `MISSING`/`ERROR` nodes |
+| `structural_replace` | Replace a form; pass `write: true` to save (otherwise returns updated content) |
+| `structural_insert` | Insert after `__start__`, `__end__`, or a symbol; pass `write: true` to save |
 | `structural_complete` | Append missing `)` to an unbalanced form |
-| `structural_format` | Re-indent a file (depth-based) |
+| `structural_format` | Re-indent a file (`align: true` for arg-column alignment) |
 | `structural_eval` | Run dialect-specific validation (byte-compile, sbcl, guile…) |
 | `structural_remove` | Remove a form (with `keep_calls` option) |
 | `structural_move` | Move a form after an anchor |
 | `structural_substitute` | Replace a sub-expression inside a form |
 | `structural_extract` | Extract a sub-expression into a new function |
+| `structural_instrument` | Instrument a form with tracing |
+| `structural_flatten` | Inline call sites and remove the definition |
+| `structural_convert_let` | Convert between `let` and `let*` |
+| `structural_splice` | Paredit splice a wrapper list |
+| `structural_raise` | Paredit raise a sub-expression |
+| `structural_slurp` | Paredit slurp (`dir`: forward/backward) |
+| `structural_barf` | Paredit barf (`dir`: forward/backward) |
 | `structural_rename` | Rename a form, call sites, and refs (`refs: true` for plain `'old`) |
 | `structural_rename_project` | Rename a symbol across a directory or glob (definition + every reference); diff preview unless `write: true` |
 | `structural_analyze` | Project-wide unused-definition, unresolved-call, and arity analysis over a directory or glob |
@@ -309,7 +335,7 @@ Expose the same structural tools to Cursor, Claude Code, or any MCP client:
 | `structural_diff` | Git diff since `ref` → touched symbols; `impact: true` for blast radius |
 | `structural_wrap` | Wrap a form's body in a construct |
 
-All tools accept `write: true` to save in place. `structural_replace`, `structural_insert`, and `structural_format` accept `diff: true` to show a line-based diff before applying.
+Mutating tools accept `write: true` to save in place; without it they return the updated buffer (or a unified diff when `diff: true`). `structural_replace`, `structural_insert`, and `structural_format` accept `diff: true`.
 
 ### Hardening the MCP server
 

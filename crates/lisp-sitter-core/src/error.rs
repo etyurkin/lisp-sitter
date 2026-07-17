@@ -8,9 +8,6 @@ pub enum Error {
     #[error("no top-level form `{0}` found")]
     FormNotFound(String),
 
-    #[error("{0} is only for new/empty files; use {1} or a symbol name")]
-    StartAnchorOnNonempty(String, String),
-
     #[error("new_body must be a complete top-level sexp")]
     BodyNotSexp,
 

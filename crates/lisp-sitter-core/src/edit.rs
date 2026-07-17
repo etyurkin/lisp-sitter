@@ -1,4 +1,4 @@
-use crate::anchors::{is_anchor_end, is_anchor_start, ANCHOR_END, ANCHOR_START};
+use crate::anchors::{is_anchor_end, is_anchor_start};
 use crate::error::{Error, Result};
 use crate::plugin::LanguagePlugin;
 use crate::scan::{content_blank, replace_region};
@@ -67,8 +67,12 @@ pub fn insert_after(
 
     let pos = find_insert_position(plugin, content, after_symbol)?;
     let blank = content_blank(content);
-    let insertion = if pos == 0 && blank {
+    let at_start = is_anchor_start(after_symbol);
+    let insertion = if blank {
         body.to_string()
+    } else if at_start {
+        // Place the new form before the existing first form.
+        format!("{body}\n\n")
     } else {
         format!("\n\n{body}")
     };
@@ -89,19 +93,44 @@ fn find_insert_position(
     after_symbol: &str,
 ) -> Result<usize> {
     if is_anchor_start(after_symbol) {
-        if content_blank(content) {
-            return Ok(0);
-        }
-        return Err(Error::StartAnchorOnNonempty(
-            ANCHOR_START.into(),
-            ANCHOR_END.into(),
-        ));
+        return start_of_forms(plugin, content);
     }
     if is_anchor_end(after_symbol) {
         return end_of_forms(plugin, content);
     }
     let (_, end) = plugin.node_bounds(content, after_symbol)?;
     Ok(end)
+}
+
+fn start_of_forms(plugin: &dyn LanguagePlugin, content: &str) -> Result<usize> {
+    if content_blank(content) {
+        return Ok(0);
+    }
+    if let Some(start) = plugin.top_level_forms(content)?.first().map(|f| f.start) {
+        return Ok(start);
+    }
+    first_top_level_form_start(content).ok_or_else(|| Error::Message("No forms".into()))
+}
+
+/// Byte offset of the first complete top-level s-expression.
+fn first_top_level_form_start(content: &str) -> Option<usize> {
+    use crate::sexp_reader::{skip_line_comment, skip_sexp_in, skip_whitespace_and_comments};
+    let b = content.as_bytes();
+    let mut i = 0;
+    loop {
+        i = skip_whitespace_and_comments(b, i);
+        if i >= b.len() {
+            return None;
+        }
+        if b[i] == b';' {
+            i = skip_line_comment(b, i).unwrap_or(b.len());
+            continue;
+        }
+        return match skip_sexp_in(b, i, Dialect::Generic) {
+            Ok(end) if end > i => Some(i),
+            _ => None,
+        };
+    }
 }
 
 fn end_of_forms(plugin: &dyn LanguagePlugin, content: &str) -> Result<usize> {
@@ -284,5 +313,12 @@ mod tests {
         let src = "(require 'a)\n(provide 'x)\n";
         let end = last_top_level_form_end(src).unwrap();
         assert_eq!(&src[..end], "(require 'a)\n(provide 'x)");
+    }
+
+    #[test]
+    fn first_form_start_skips_leading_comments() {
+        let src = ";; header\n(defun foo () 1)\n";
+        let start = first_top_level_form_start(src).unwrap();
+        assert_eq!(&src[start..], "(defun foo () 1)\n");
     }
 }
