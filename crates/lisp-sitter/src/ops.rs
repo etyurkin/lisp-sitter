@@ -447,13 +447,22 @@ pub fn expand_paths(reg: &Registry, path: &str) -> Vec<String> {
 /// matching. `**` matches zero or more directory levels; `*`/`?` stay within
 /// one component.
 fn glob_expand(pattern: &str) -> Vec<String> {
-    let is_abs = pattern.starts_with('/');
-    let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
-    let start = if is_abs {
-        std::path::PathBuf::from("/")
-    } else {
-        std::path::PathBuf::from(".")
-    };
+    // Normalize separators so Windows paths and mixed globs work.
+    let pattern = pattern.replace('\\', "/");
+    let (start, segments): (std::path::PathBuf, Vec<&str>) =
+        if pattern.len() >= 2 && pattern.as_bytes().get(1) == Some(&b':') {
+            // Drive-absolute: C:/Users/.../*.el
+            let drive = &pattern[..2];
+            let rest = pattern[2..].trim_start_matches('/');
+            let segments: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+            (std::path::PathBuf::from(format!("{drive}/")), segments)
+        } else if pattern.starts_with('/') {
+            let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+            (std::path::PathBuf::from("/"), segments)
+        } else {
+            let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+            (std::path::PathBuf::from("."), segments)
+        };
     let mut out = Vec::new();
     glob_walk(&start, &segments, &mut out);
     out

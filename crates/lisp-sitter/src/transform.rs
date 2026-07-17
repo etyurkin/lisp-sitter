@@ -1392,7 +1392,7 @@ mod tests {
     fn test_convert_let_star_to_let() {
         let reg = default_registry();
         let (dir, path) = tmp_file(
-            "conv_let*",
+            "conv_let_star",
             "(defun foo ()\n  (let* ((x 1) (y 2)) (+ x y)))\n",
         );
         let result = convert_let(&reg, path.to_str().unwrap(), "foo", "let").unwrap();
