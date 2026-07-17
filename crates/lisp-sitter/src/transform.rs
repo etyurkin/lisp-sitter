@@ -14,6 +14,24 @@ fn ops_read(path: &str) -> Result<String, Error> {
     crate::ops::read_source(path, false)
 }
 
+/// Sequencing form for multi-expression bodies (`progn` / `begin`).
+fn sequence_kw(plugin_id: &str) -> &'static str {
+    if plugin_id == "scheme" {
+        "begin"
+    } else {
+        "progn"
+    }
+}
+
+/// Dialect false literal used as a default `if` else branch.
+fn false_lit(plugin_id: &str) -> &'static str {
+    if plugin_id == "scheme" {
+        "#f"
+    } else {
+        "nil"
+    }
+}
+
 // Whitespace and the `(`/`)` delimiters are all ASCII, so these scanners test
 // bytes directly. `is_ascii_whitespace()` is false for any UTF-8 continuation
 // or lead byte, so a multi-byte symbol (e.g. `xà`) is never split mid-character
@@ -393,16 +411,22 @@ pub fn wrap_body(
     let nf = format!(
         "{}{}{}",
         &ft[..b.0],
-        make_wrapper(wrapper, args, &ft[b.0..b.1])?,
+        make_wrapper(wrapper, args, &ft[b.0..b.1], p.id())?,
         &ft[b.1..]
     );
     replace_node(p, &c, sym, &nf)
 }
 
-fn make_wrapper(w: &str, a: &[(&str, &str)], body: &str) -> Result<String, Error> {
+fn make_wrapper(
+    w: &str,
+    a: &[(&str, &str)],
+    body: &str,
+    plugin_id: &str,
+) -> Result<String, Error> {
     let b = body.trim();
+    let seq = sequence_kw(plugin_id);
     match w {
-        "progn" => Ok(format!("(progn\n  {})", b.replace('\n', "\n  "))),
+        "progn" | "begin" => Ok(format!("({seq}\n  {})", b.replace('\n', "\n  "))),
         "let" => {
             let bind = a
                 .iter()
@@ -416,16 +440,20 @@ fn make_wrapper(w: &str, a: &[(&str, &str)], body: &str) -> Result<String, Error
                 .iter()
                 .find(|(k, _)| *k == "condition")
                 .map(|(_, v)| *v)
-                .unwrap_or("t");
+                .unwrap_or(if plugin_id == "scheme" { "#t" } else { "t" });
             // `if` has fixed arity: the 2nd arg is the whole `then` branch.
-            // If the body is more than one form, group it in a `progn` so the
-            // extra forms don't silently become `else`/subsequent arguments.
+            // If the body is more than one form, group it so the extra forms
+            // don't silently become `else`/subsequent arguments.
             let then = if count_forms(b) > 1 {
-                format!("(progn {b})")
+                format!("({seq} {b})")
             } else {
                 b.to_string()
             };
-            Ok(format!("(if {cond}\n    {}\n  nil)", then))
+            Ok(format!(
+                "(if {cond}\n    {}\n  {})",
+                then,
+                false_lit(plugin_id)
+            ))
         }
         o => Err(Error::InvalidArgs(format!("unknown wrapper: {o}"))),
     }
@@ -449,7 +477,7 @@ pub fn instrument(
         format!(
             "{}{}{}",
             &ft[..b.0],
-            instr_body(&ft[b.0..b.1], tf, p.dialect())?,
+            instr_body(&ft[b.0..b.1], tf, p.dialect(), p.id())?,
             &ft[b.1..]
         )
     } else if let (Some(pat), Some(wrp)) = (at, wrap) {
@@ -463,11 +491,12 @@ pub fn instrument(
     Ok(u)
 }
 
-fn instr_body(body: &str, trace: &str, d: Dialect) -> Result<String, Error> {
+fn instr_body(body: &str, trace: &str, d: Dialect, plugin_id: &str) -> Result<String, Error> {
     let b = body.as_bytes();
     let mut out = String::new();
     let mut i = 0;
     let mut first = true;
+    let seq = sequence_kw(plugin_id);
     loop {
         while i < b.len() && b[i].is_ascii_whitespace() {
             i += 1;
@@ -489,7 +518,7 @@ fn instr_body(body: &str, trace: &str, d: Dialect) -> Result<String, Error> {
             if !first {
                 out.push('\n');
             }
-            out.push_str(&format!("(progn\n  {}\n  {})", trace, f));
+            out.push_str(&format!("({seq}\n  {}\n  {})", trace, f));
             first = false;
         }
         i = n;
@@ -510,7 +539,7 @@ fn def_params_and_body(
 ) -> Option<(Vec<String>, String)> {
     if let Some((params, body_text)) = plugin.form_params_and_body(ft) {
         // body_text may be a single expression or multiple; wrap if needed.
-        let body = wrap_multi_body(&body_text, d);
+        let body = wrap_multi_body(&body_text, d, sequence_kw(plugin.id()));
         return Some((params, body));
     }
     def_params_and_body_char(ft, d)
@@ -1366,25 +1395,68 @@ mod tests {
 
     #[test]
     fn test_make_wrapper_progn() {
-        let result = make_wrapper("progn", &[], "(+ 1 2)").unwrap();
+        let result = make_wrapper("progn", &[], "(+ 1 2)", "elisp").unwrap();
         assert_eq!(result, "(progn\n  (+ 1 2))");
     }
 
     #[test]
+    fn test_make_wrapper_begin_scheme() {
+        let result = make_wrapper("begin", &[], "(+ 1 2)", "scheme").unwrap();
+        assert_eq!(result, "(begin\n  (+ 1 2))");
+    }
+
+    #[test]
     fn test_make_wrapper_let() {
-        let result = make_wrapper("let", &[("bindings", "((x 1))")], "(+ x 1)").unwrap();
+        let result = make_wrapper("let", &[("bindings", "((x 1))")], "(+ x 1)", "elisp").unwrap();
         assert_eq!(result, "(let ((x 1))\n  (+ x 1))");
     }
 
     #[test]
     fn test_make_wrapper_if() {
-        let result = make_wrapper("if", &[("condition", "(> x 0)")], "(+ x 1)").unwrap();
+        let result = make_wrapper("if", &[("condition", "(> x 0)")], "(+ x 1)", "elisp").unwrap();
         assert_eq!(result, "(if (> x 0)\n    (+ x 1)\n  nil)");
     }
 
     #[test]
+    fn test_make_wrapper_if_scheme() {
+        let result = make_wrapper("if", &[("condition", "(> x 0)")], "(+ x 1)", "scheme").unwrap();
+        assert_eq!(result, "(if (> x 0)\n    (+ x 1)\n  #f)");
+    }
+
+    #[test]
     fn test_make_wrapper_unknown() {
-        assert!(make_wrapper("unknown", &[], "body").is_err());
+        assert!(make_wrapper("unknown", &[], "body", "elisp").is_err());
+    }
+
+    #[test]
+    fn test_instrument_scheme_uses_begin() {
+        let reg = default_registry();
+        let dir = std::env::temp_dir().join(format!(
+            "lisp-sitter-transform-test-{}-instr-scm",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.scm");
+        std::fs::write(&path, "(define (foo x)\n  (+ x 1))\n").unwrap();
+        let result = instrument(
+            &reg,
+            path.to_str().unwrap(),
+            "foo",
+            Some("(display \"t\")"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            result.contains("(begin"),
+            "scheme instrument should use begin: {result}"
+        );
+        assert!(
+            !result.contains("(progn"),
+            "scheme instrument must not emit progn: {result}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
