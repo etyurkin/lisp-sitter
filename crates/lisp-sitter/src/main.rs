@@ -870,9 +870,8 @@ async fn run(cli: Cli) -> Result<()> {
             symbol,
             write,
         } => {
-            let multi = std::path::Path::new(&path).is_dir()
-                || path.contains('*')
-                || path.contains('?');
+            let multi =
+                std::path::Path::new(&path).is_dir() || path.contains('*') || path.contains('?');
             if multi {
                 let paths = lisp_sitter::ops::expand_paths(&reg, &path);
                 let changed = lisp_sitter::transform::flatten_project(&reg, &paths, &symbol)?;

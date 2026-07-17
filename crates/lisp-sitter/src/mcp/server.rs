@@ -351,11 +351,7 @@ impl LispSitterMcp {
     ) -> Result<String, String> {
         let d = args.depth.unwrap_or(1) as usize;
         if args.all {
-            tool_result(ops::tree_depth(
-                &self.reg,
-                &args.path,
-                d.saturating_sub(1),
-            ))
+            tool_result(ops::tree_depth(&self.reg, &args.path, d.saturating_sub(1)))
         } else if d > 1 {
             tool_result(ops::tree_depth(&self.reg, &args.path, d))
         } else {
@@ -723,14 +719,9 @@ impl LispSitterMcp {
         Parameters(args): Parameters<SlurpBarfArgs>,
     ) -> Result<String, String> {
         let d = lisp_sitter::transform::Direction::parse(&args.dir).map_err(|e| e.to_string())?;
-        let u = lisp_sitter::transform::slurp(
-            &self.reg,
-            &args.path,
-            &args.symbol,
-            &args.pattern,
-            d,
-        )
-        .map_err(|e| e.to_string())?;
+        let u =
+            lisp_sitter::transform::slurp(&self.reg, &args.path, &args.symbol, &args.pattern, d)
+                .map_err(|e| e.to_string())?;
         if args.write {
             ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?;
             Ok(format!("Wrote {}", args.path))
@@ -749,14 +740,8 @@ impl LispSitterMcp {
         Parameters(args): Parameters<SlurpBarfArgs>,
     ) -> Result<String, String> {
         let d = lisp_sitter::transform::Direction::parse(&args.dir).map_err(|e| e.to_string())?;
-        let u = lisp_sitter::transform::barf(
-            &self.reg,
-            &args.path,
-            &args.symbol,
-            &args.pattern,
-            d,
-        )
-        .map_err(|e| e.to_string())?;
+        let u = lisp_sitter::transform::barf(&self.reg, &args.path, &args.symbol, &args.pattern, d)
+            .map_err(|e| e.to_string())?;
         if args.write {
             ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?;
             Ok(format!("Wrote {}", args.path))

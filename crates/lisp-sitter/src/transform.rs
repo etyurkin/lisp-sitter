@@ -417,12 +417,7 @@ pub fn wrap_body(
     replace_node(p, &c, sym, &nf)
 }
 
-fn make_wrapper(
-    w: &str,
-    a: &[(&str, &str)],
-    body: &str,
-    plugin_id: &str,
-) -> Result<String, Error> {
+fn make_wrapper(w: &str, a: &[(&str, &str)], body: &str, plugin_id: &str) -> Result<String, Error> {
     let b = body.trim();
     let seq = sequence_kw(plugin_id);
     match w {
@@ -829,7 +824,12 @@ fn next_sibling(ft: &str, after: usize, parent_end: usize, d: Dialect) -> Option
     Some((i, end))
 }
 
-fn prev_sibling(ft: &str, before: usize, parent_start: usize, d: Dialect) -> Option<(usize, usize)> {
+fn prev_sibling(
+    ft: &str,
+    before: usize,
+    parent_start: usize,
+    d: Dialect,
+) -> Option<(usize, usize)> {
     let b = ft.as_bytes();
     let mut last = None;
     let mut i = skip_sp(b, parent_start + 1);
@@ -1674,10 +1674,7 @@ mod tests {
     #[test]
     fn test_slurp_forward() {
         let reg = default_registry();
-        let (dir, path) = tmp_file(
-            "slurp_fwd",
-            "(defun foo ()\n  (list a)\n  b)\n",
-        );
+        let (dir, path) = tmp_file("slurp_fwd", "(defun foo ()\n  (list a)\n  b)\n");
         let result = slurp(
             &reg,
             path.to_str().unwrap(),
@@ -1696,10 +1693,7 @@ mod tests {
     #[test]
     fn test_barf_forward() {
         let reg = default_registry();
-        let (dir, path) = tmp_file(
-            "barf_fwd",
-            "(defun foo ()\n  (list a b))\n",
-        );
+        let (dir, path) = tmp_file("barf_fwd", "(defun foo ()\n  (list a b))\n");
         let result = barf(
             &reg,
             path.to_str().unwrap(),
