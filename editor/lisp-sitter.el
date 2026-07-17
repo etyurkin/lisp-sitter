@@ -1,7 +1,7 @@
 ;;; lisp-sitter.el --- Structural editing via the lisp-sitter CLI -*- lexical-binding: t; -*-
 
 ;; Author: lisp-sitter contributors
-;; Version: 1.1.1
+;; Version: 1.1.2
 ;; Package-Requires: ((emacs "27.1"))
 ;; Keywords: languages, tools, lisp
 ;; URL: https://github.com/etyurkin/lisp-sitter
