@@ -329,7 +329,7 @@ pub fn extract(
     } else {
         format!("({} {})", name, fv.join(" "))
     };
-    let uf = format!("{}{}{}", &ft[..s], &call, &ft[e..]);
+    let uf = format!("{}{}{}", &ft[..s], call, &ft[e..]);
     let as_ = replace_node(p, &c, sym, &uf)?;
     let p2 = crate::ops::resolve_plugin(reg, path, None)?;
     let ins = insert_after(p2, &as_, sym, &nd).map_err(|e| relabel_edit(e, "extract"))?;
@@ -478,7 +478,7 @@ pub fn instrument(
     } else if let (Some(pat), Some(wrp)) = (at, wrap) {
         let (s, e) = find_sexp(p, ft, pat, p.dialect())
             .ok_or_else(|| Error::PatternNotFound(pat.to_string()))?;
-        format!("{}{}{}", &ft[..s], &wrp.replace("<form>", pat), &ft[e..])
+        format!("{}{}{}", &ft[..s], wrp.replace("<form>", pat), &ft[e..])
     } else {
         return Err(Error::InvalidArgs("provide --with or --at --wrap".into()));
     };
