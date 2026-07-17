@@ -257,7 +257,10 @@ enum Command {
         write: bool,
     },
     /// Inline all call sites of a function with its body and remove the definition.
-    /// Example: lisp-sitter flatten foo.el helper --write
+    /// PATH may be a file, directory, or glob for a project-wide flatten.
+    /// Examples:
+    ///   lisp-sitter flatten foo.el helper --write
+    ///   lisp-sitter flatten src/ helper --write
     Flatten {
         path: String,
         symbol: String,
@@ -297,6 +300,30 @@ enum Command {
         symbol: String,
         #[arg(long)]
         pattern: String,
+        #[arg(long)]
+        write: bool,
+    },
+    /// Paredit slurp: absorb an adjacent sibling into the matched list.
+    /// Example: lisp-sitter slurp foo.el my-func --pattern '(list a)' --dir forward
+    Slurp {
+        path: String,
+        symbol: String,
+        #[arg(long)]
+        pattern: String,
+        #[arg(long, default_value = "forward")]
+        dir: String,
+        #[arg(long)]
+        write: bool,
+    },
+    /// Paredit barf: eject an edge element of the matched list as a sibling.
+    /// Example: lisp-sitter barf foo.el my-func --pattern '(list a b)' --dir forward
+    Barf {
+        path: String,
+        symbol: String,
+        #[arg(long)]
+        pattern: String,
+        #[arg(long, default_value = "forward")]
+        dir: String,
         #[arg(long)]
         write: bool,
     },
@@ -843,8 +870,39 @@ async fn run(cli: Cli) -> Result<()> {
             symbol,
             write,
         } => {
-            let u = lisp_sitter::transform::flatten(&reg, &path, &symbol)?;
-            finish_edit(&path, &u, write, cf)?;
+            let multi = std::path::Path::new(&path).is_dir()
+                || path.contains('*')
+                || path.contains('?');
+            if multi {
+                let paths = lisp_sitter::ops::expand_paths(&reg, &path);
+                let changed = lisp_sitter::transform::flatten_project(&reg, &paths, &symbol)?;
+                if write {
+                    if cf {
+                        for (p, c) in &changed {
+                            if let Ok(orig) = lisp_sitter::ops::read_file(p) {
+                                eprint!("{}", lisp_sitter::ops::diff_text(&orig, c, p));
+                            }
+                        }
+                        confirm_or_abort();
+                    }
+                    for (p, c) in &changed {
+                        lisp_sitter::ops::atomic_write(p, c)?;
+                        println!("Wrote {p}");
+                    }
+                } else {
+                    for (p, c) in &changed {
+                        let orig = lisp_sitter::ops::read_file(p)?;
+                        eprint!("{}", lisp_sitter::ops::diff_text(&orig, c, p));
+                    }
+                    println!(
+                        "{} file(s) would change (use --write to apply)",
+                        changed.len()
+                    );
+                }
+            } else {
+                let u = lisp_sitter::transform::flatten(&reg, &path, &symbol)?;
+                finish_edit(&path, &u, write, cf)?;
+            }
         }
         Command::ConvertLet {
             path,
@@ -877,6 +935,28 @@ async fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let u = lisp_sitter::transform::raise(&reg, &path, &symbol, &pattern)?;
+            finish_edit(&path, &u, write, cf)?;
+        }
+        Command::Slurp {
+            path,
+            symbol,
+            pattern,
+            dir,
+            write,
+        } => {
+            let d = lisp_sitter::transform::Direction::parse(&dir)?;
+            let u = lisp_sitter::transform::slurp(&reg, &path, &symbol, &pattern, d)?;
+            finish_edit(&path, &u, write, cf)?;
+        }
+        Command::Barf {
+            path,
+            symbol,
+            pattern,
+            dir,
+            write,
+        } => {
+            let d = lisp_sitter::transform::Direction::parse(&dir)?;
+            let u = lisp_sitter::transform::barf(&reg, &path, &symbol, &pattern, d)?;
             finish_edit(&path, &u, write, cf)?;
         }
         Command::Analyze {

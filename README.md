@@ -77,7 +77,7 @@ lisp-sitter check-node --lang scheme --body '(define x 1)'
 
 | Anchor | Meaning |
 |--------|---------|
-| `__start__` | Insert as the first form (empty file only) |
+| `__start__` | Insert as the first form (before existing forms; also works on nonempty files) |
 | `__end__` | Append after the last top-level form |
 | *symbol* | Insert immediately after the named form |
 
@@ -130,10 +130,12 @@ lisp-sitter completions fish | source    # fish
 | `rename PATH OLD NEW` | Rename a form, its call sites, and `#'old`/`'old` references. `PATH` may be a file, directory, or glob for a **project-wide** rename (definition + every reference across all matching files). `--refs` also renames plain `'old`; `--no-refs` renames only head-position call sites |
 | `wrap PATH SYMBOL` | Wrap body in `progn`/`begin`, `let`, or `if` (dialect-aware) |
 | `instrument PATH SYMBOL` | Trace a form body (`--with FORM`) or wrap a sub-expression (`--at` / `--wrap`) |
-| `flatten PATH SYMBOL` | Inline all call sites of a simple positional function and remove the definition |
+| `flatten PATH SYMBOL` | Inline all call sites of a simple positional function and remove the definition. `PATH` may be a file, directory, or glob |
 | `convert-let PATH SYMBOL --to let\|let*` | Convert the first `let`/`let*` binding form inside a definition |
 | `splice PATH SYMBOL --pattern …` | Paredit splice: dissolve a wrapper list (drops head + parens) |
 | `raise PATH SYMBOL --pattern …` | Paredit raise: replace the enclosing list with the matched sub-expression |
+| `slurp PATH SYMBOL --pattern …` | Paredit slurp: absorb an adjacent sibling (`--dir forward\|backward`) |
+| `barf PATH SYMBOL --pattern …` | Paredit barf: eject an edge list element (`--dir forward\|backward`) |
 | `find-errors PATH` | List tree-sitter `MISSING`/`ERROR` nodes (unbalanced parens, etc.) |
 | `context PATH` | Outline plus full text of each top-level form |
 | `analyze PATH` | Project-wide semantic analysis over a directory or glob: unused definitions, unresolved calls, and arity mismatches. `--unused` / `--unresolved` / `--arity` to run a subset (default: all) |
@@ -160,7 +162,7 @@ lisp-sitter tree src/foo.el --depth 2
 # →   if:condition@18:3
 ```
 
-Directory and glob paths expand for `tree`, `fmt`, `check`, `remove`, `rename`, `analyze`, and the call-graph commands (`callers` / `callees` / `explore` / `impact` / `diff`):
+Directory and glob paths expand for `tree`, `fmt`, `check`, `remove`, `rename`, `flatten`, `analyze`, and the call-graph commands (`callers` / `callees` / `explore` / `impact` / `diff`):
 ```bash
 lisp-sitter check "src/**/*.el"
 lisp-sitter tree lib/
@@ -263,9 +265,14 @@ the command line.
 | `C-c s g` | `lisp-sitter-get` | Show the text of a form |
 | `C-c s r` | `lisp-sitter-replace-defun` | Re-validate and rewrite the form at point |
 | `C-c s R` | `lisp-sitter-rename` | Rename a symbol (`C-u` for project-wide) |
+| `C-c s s` | `lisp-sitter-substitute` | Substitute a sub-expression |
+| `C-c s w` / `X` / `m` / `d` / `i` | wrap / extract / move / remove / insert | Structural edits |
+| `C-c s F` / `S` / `^` / `>` / `<` | flatten / splice / raise / slurp / barf | Inline + paredit |
+| `C-c s C` / `E` / `I` | callers / explore / impact | Call graph (`C-u` for project) |
 | `C-c s f` | `lisp-sitter-format-buffer` | Re-indent the file |
 | `C-c s c` | `lisp-sitter-check` | Validate the file |
 | `C-c s a` | `lisp-sitter-analyze` | Semantic analysis (`C-u` for project-wide) |
+| `C-c s .` | `lisp-sitter-dispatch` | Transient menu of all commands |
 
 ## Agent workflow
 
@@ -316,6 +323,8 @@ Expose the same structural tools to Cursor, Claude Code, or any MCP client:
 | `structural_convert_let` | Convert between `let` and `let*` |
 | `structural_splice` | Paredit splice a wrapper list |
 | `structural_raise` | Paredit raise a sub-expression |
+| `structural_slurp` | Paredit slurp (`dir`: forward/backward) |
+| `structural_barf` | Paredit barf (`dir`: forward/backward) |
 | `structural_rename` | Rename a form, call sites, and refs (`refs: true` for plain `'old`) |
 | `structural_rename_project` | Rename a symbol across a directory or glob (definition + every reference); diff preview unless `write: true` |
 | `structural_analyze` | Project-wide unused-definition, unresolved-call, and arity analysis over a directory or glob |

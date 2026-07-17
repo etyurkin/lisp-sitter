@@ -366,6 +366,21 @@ mod tests {
     fn insert_at_start() {
         let updated =
             insert_after(&ElispPlugin::new(), "", "__start__", "(defun first () 1)").unwrap();
+        let nonempty = insert_after(
+            &ElispPlugin::new(),
+            "(defun existing () 0)\n",
+            "__start__",
+            "(defun first () 1)",
+        )
+        .unwrap();
+        assert!(
+            nonempty.starts_with("(defun first () 1)"),
+            "__start__ on nonempty should prepend: {nonempty}"
+        );
+        assert!(
+            nonempty.contains("(defun existing () 0)"),
+            "existing form must remain: {nonempty}"
+        );
         assert!(updated.contains("defun first"));
     }
 

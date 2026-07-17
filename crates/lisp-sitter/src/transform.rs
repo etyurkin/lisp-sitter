@@ -599,14 +599,13 @@ fn inline_calls(
     Ok(result)
 }
 
-pub fn flatten(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
-    let c = ops_read(path)?;
-    let p = crate::ops::resolve_plugin(reg, path, None)?;
-    ensure_source_editable(p, &c)?;
+fn flattenable_params_body(
+    p: &dyn LanguagePlugin,
+    ft: &str,
+    sym: &str,
+) -> Result<(Vec<String>, String), Error> {
     let d = p.dialect();
-    let ft = get_form_text(p, &c, sym)?.to_string();
-
-    let (params, body) = def_params_and_body(p, &ft, d).ok_or_else(|| {
+    let (params, body) = def_params_and_body(p, ft, d).ok_or_else(|| {
         Error::Message(format!(
             "flatten: `{sym}` is not a flattenable function definition"
         ))
@@ -627,25 +626,42 @@ pub fn flatten(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
             "flatten: `{sym}` is recursive; cannot inline"
         )));
     }
+    Ok((params, body))
+}
 
-    // Exclude the definition form itself from call-site inlining (a Scheme curried
-    // define `(define (sym args…) …)` has sym in head position inside the signature).
-    let def_bounds = p.node_bounds(&c, sym).ok();
-    // Inline call sites first, then remove the (now-unreferenced) definition.
-    let inlined = inline_calls(p, &c, sym, &params, &body, d, def_bounds)?;
-    let (s, e) = p.node_bounds(&inlined, sym)?;
-    let rs = (0..s)
+fn remove_definition_form(content: &str, start: usize, end: usize) -> String {
+    let rs = (0..start)
         .rev()
-        .find(|&i| !inlined.as_bytes()[i].is_ascii_whitespace())
+        .find(|&i| !content.as_bytes()[i].is_ascii_whitespace())
         .map(|i| i + 1)
-        .unwrap_or(s);
-    let mut u = String::with_capacity(inlined.len());
-    u.push_str(&inlined[..rs]);
-    if rs < s {
+        .unwrap_or(start);
+    let mut u = String::with_capacity(content.len());
+    u.push_str(&content[..rs]);
+    if rs < start {
         u.push('\n');
     }
-    u.push_str(&inlined[e..]);
+    u.push_str(&content[end..]);
+    u
+}
 
+fn flatten_content(
+    p: &dyn LanguagePlugin,
+    content: &str,
+    sym: &str,
+    params: &[String],
+    body: &str,
+    remove_def: bool,
+) -> Result<String, Error> {
+    ensure_source_editable(p, content)?;
+    let d = p.dialect();
+    let def_bounds = p.node_bounds(content, sym).ok();
+    let inlined = inline_calls(p, content, sym, params, body, d, def_bounds)?;
+    let u = if remove_def {
+        let (s, e) = p.node_bounds(&inlined, sym)?;
+        remove_definition_form(&inlined, s, e)
+    } else {
+        inlined
+    };
     p.check_file(&u).map_err(|e| match e {
         Error::Syntax(detail) => Error::SyntaxAfterEdit {
             operation: "flatten".into(),
@@ -654,6 +670,64 @@ pub fn flatten(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
         o => o,
     })?;
     Ok(u)
+}
+
+pub fn flatten(reg: &Registry, path: &str, sym: &str) -> Result<String, Error> {
+    let c = ops_read(path)?;
+    let p = crate::ops::resolve_plugin(reg, path, None)?;
+    let ft = get_form_text(p, &c, sym)?.to_string();
+    let (params, body) = flattenable_params_body(p, &ft, sym)?;
+    flatten_content(p, &c, sym, &params, &body, true)
+}
+
+/// Project-wide flatten: inline every call site across `paths`, then remove the
+/// definition from the file(s) that define `sym`.
+pub fn flatten_project(
+    reg: &Registry,
+    paths: &[String],
+    sym: &str,
+) -> Result<Vec<(String, String)>, Error> {
+    let mut def: Option<(String, Vec<String>, String)> = None;
+    for path in paths {
+        let Ok(c) = ops_read(path) else { continue };
+        let Ok(p) = crate::ops::resolve_plugin(reg, path, None) else {
+            continue;
+        };
+        if p.node_bounds(&c, sym).is_err() {
+            continue;
+        }
+        let ft = get_form_text(p, &c, sym)?.to_string();
+        let (params, body) = flattenable_params_body(p, &ft, sym)?;
+        def = Some((path.clone(), params, body));
+        break;
+    }
+    let Some((_def_path, params, body)) = def else {
+        return Err(Error::FormNotFound(sym.to_string()));
+    };
+
+    let mut changed = Vec::new();
+    for path in paths {
+        let Ok(c) = ops_read(path) else { continue };
+        let Ok(p) = crate::ops::resolve_plugin(reg, path, None) else {
+            continue;
+        };
+        let has_def = p.node_bounds(&c, sym).is_ok();
+        let has_calls = p
+            .find_symbol_refs(&c, sym)
+            .iter()
+            .any(|r| r.kind == RefKind::CallHead);
+        if !has_def && !has_calls {
+            continue;
+        }
+        let u = flatten_content(p, &c, sym, &params, &body, has_def)?;
+        if u != c {
+            changed.push((path.clone(), u));
+        }
+    }
+    if changed.is_empty() {
+        return Err(Error::FormNotFound(sym.to_string()));
+    }
+    Ok(changed)
 }
 
 // ── splice ─────────────────────────────────────────────────────
@@ -705,6 +779,175 @@ pub fn raise(reg: &Registry, path: &str, sym: &str, pat: &str) -> Result<String,
     let raised = ft[s..e].to_string();
     let nf = format!("{}{}{}", &ft[..ps], raised, &ft[pe..]);
     let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "raise"))?;
+    Ok(u)
+}
+
+// ── slurp / barf ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Forward,
+    Backward,
+}
+
+impl Direction {
+    pub fn parse(s: &str) -> Result<Self, Error> {
+        match s {
+            "forward" | "f" => Ok(Self::Forward),
+            "backward" | "b" => Ok(Self::Backward),
+            other => Err(Error::InvalidArgs(format!(
+                "invalid direction `{other}`: expected forward or backward"
+            ))),
+        }
+    }
+}
+
+fn require_list_pattern(ft: &str, s: usize, e: usize, op: &str) -> Result<(), Error> {
+    let b = ft.as_bytes();
+    if b.get(s) == Some(&b'(') && b.get(e.saturating_sub(1)) == Some(&b')') {
+        Ok(())
+    } else {
+        Err(Error::Message(format!(
+            "{op}: pattern must be a parenthesised list"
+        )))
+    }
+}
+
+fn next_sibling(ft: &str, after: usize, parent_end: usize, d: Dialect) -> Option<(usize, usize)> {
+    let b = ft.as_bytes();
+    let i = skip_sp(b, after);
+    if i >= parent_end.saturating_sub(1) || i >= b.len() {
+        return None;
+    }
+    if b[i] == b')' {
+        return None;
+    }
+    let end = skip_sexp_d(b, i, d);
+    if end <= i || end > parent_end {
+        return None;
+    }
+    Some((i, end))
+}
+
+fn prev_sibling(ft: &str, before: usize, parent_start: usize, d: Dialect) -> Option<(usize, usize)> {
+    let b = ft.as_bytes();
+    let mut last = None;
+    let mut i = skip_sp(b, parent_start + 1);
+    while i < before {
+        if i >= b.len() || b[i] == b')' {
+            break;
+        }
+        let end = skip_sexp_d(b, i, d);
+        if end <= i || end > before {
+            break;
+        }
+        last = Some((i, end));
+        i = skip_sp(b, end);
+    }
+    last
+}
+
+fn list_elements(ft: &str, s: usize, e: usize, d: Dialect) -> Vec<(usize, usize)> {
+    split_elements(&ft[s..e], d)
+        .into_iter()
+        .map(|(a, b)| (s + a, s + b))
+        .collect()
+}
+
+/// Paredit slurp: absorb the adjacent sibling into the matched list.
+/// Forward: `(list a) b` → `(list a b)`. Backward: `a (list b)` → `(list a b)`.
+pub fn slurp(
+    reg: &Registry,
+    path: &str,
+    sym: &str,
+    pat: &str,
+    dir: Direction,
+) -> Result<String, Error> {
+    let c = ops_read(path)?;
+    let p = crate::ops::resolve_plugin(reg, path, None)?;
+    let ft = get_form_text(p, &c, sym)?;
+    let d = p.dialect();
+    let (s, e) = find_sexp(p, ft, pat, d).ok_or_else(|| Error::PatternNotFound(pat.to_string()))?;
+    require_list_pattern(ft, s, e, "slurp")?;
+    let (ps, pe) = find_enclosing_sexp(ft, s, d).unwrap_or((0, ft.len()));
+    let nf = match dir {
+        Direction::Forward => {
+            let (ns, ne) = next_sibling(ft, e, pe, d).ok_or_else(|| {
+                Error::Message("slurp forward: no following sibling to absorb".into())
+            })?;
+            let inner = ft[s + 1..e - 1].trim_end();
+            let sibling = &ft[ns..ne];
+            let new_list = if inner.is_empty() {
+                format!("({sibling})")
+            } else {
+                format!("({inner} {sibling})")
+            };
+            format!("{}{}{}", &ft[..s], new_list, &ft[ne..])
+        }
+        Direction::Backward => {
+            let (ns, ne) = prev_sibling(ft, s, ps, d).ok_or_else(|| {
+                Error::Message("slurp backward: no preceding sibling to absorb".into())
+            })?;
+            let inner = ft[s + 1..e - 1].trim_start();
+            let sibling = &ft[ns..ne];
+            let new_list = if inner.is_empty() {
+                format!("({sibling})")
+            } else {
+                format!("({sibling} {inner})")
+            };
+            format!("{}{}{}", &ft[..ns], new_list, &ft[e..])
+        }
+    };
+    let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "slurp"))?;
+    Ok(u)
+}
+
+/// Paredit barf: eject the edge element of the matched list as a sibling.
+/// Forward: `(list a b)` → `(list a) b`. Backward: `(list a b)` → `a (list b)`.
+pub fn barf(
+    reg: &Registry,
+    path: &str,
+    sym: &str,
+    pat: &str,
+    dir: Direction,
+) -> Result<String, Error> {
+    let c = ops_read(path)?;
+    let p = crate::ops::resolve_plugin(reg, path, None)?;
+    let ft = get_form_text(p, &c, sym)?;
+    let d = p.dialect();
+    let (s, e) = find_sexp(p, ft, pat, d).ok_or_else(|| Error::PatternNotFound(pat.to_string()))?;
+    require_list_pattern(ft, s, e, "barf")?;
+    let elems = list_elements(ft, s, e, d);
+    if elems.is_empty() {
+        return Err(Error::Message("barf: list has no elements to eject".into()));
+    }
+    let nf = match dir {
+        Direction::Forward => {
+            let (es, ee) = *elems.last().unwrap();
+            if elems.len() == 1 {
+                return Err(Error::Message(
+                    "barf forward: refusing to eject the only list element".into(),
+                ));
+            }
+            let kept_end = elems[elems.len() - 2].1;
+            let new_list = format!("({})", ft[s + 1..kept_end].trim_end());
+            let ejected = &ft[es..ee];
+            format!("{}{} {}{}", &ft[..s], new_list, ejected, &ft[e..])
+        }
+        Direction::Backward => {
+            let (es, ee) = elems[0];
+            if elems.len() == 1 {
+                return Err(Error::Message(
+                    "barf backward: refusing to eject the only list element".into(),
+                ));
+            }
+            let kept_start = elems[1].0;
+            let new_list = format!("({})", ft[kept_start..e - 1].trim_start());
+            let ejected = &ft[es..ee];
+            format!("{}{} {}{}", &ft[..s], ejected, new_list, &ft[e..])
+        }
+    };
+    let u = replace_node(p, &c, sym, &nf).map_err(|e| relabel_edit(e, "barf"))?;
     Ok(u)
 }
 
@@ -1426,6 +1669,96 @@ mod tests {
     #[test]
     fn test_make_wrapper_unknown() {
         assert!(make_wrapper("unknown", &[], "body", "elisp").is_err());
+    }
+
+    #[test]
+    fn test_slurp_forward() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file(
+            "slurp_fwd",
+            "(defun foo ()\n  (list a)\n  b)\n",
+        );
+        let result = slurp(
+            &reg,
+            path.to_str().unwrap(),
+            "foo",
+            "(list a)",
+            Direction::Forward,
+        )
+        .unwrap();
+        assert!(
+            result.contains("(list a b)"),
+            "slurp forward failed: {result}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_barf_forward() {
+        let reg = default_registry();
+        let (dir, path) = tmp_file(
+            "barf_fwd",
+            "(defun foo ()\n  (list a b))\n",
+        );
+        let result = barf(
+            &reg,
+            path.to_str().unwrap(),
+            "foo",
+            "(list a b)",
+            Direction::Forward,
+        )
+        .unwrap();
+        assert!(
+            result.contains("(list a)"),
+            "barf should keep list a: {result}"
+        );
+        assert!(
+            result.contains(" b)"),
+            "barf should eject b as sibling: {result}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_flatten_project_across_files() {
+        let reg = default_registry();
+        let dir = std::env::temp_dir().join(format!(
+            "lisp-sitter-transform-test-{}-flat-proj",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let def = dir.join("def.el");
+        let caller = dir.join("use.el");
+        std::fs::write(&def, "(defun add1 (x) (+ x 1))\n").unwrap();
+        std::fs::write(&caller, "(defun caller (y) (add1 y))\n").unwrap();
+        let paths = vec![
+            def.to_str().unwrap().to_string(),
+            caller.to_str().unwrap().to_string(),
+        ];
+        let changed = flatten_project(&reg, &paths, "add1").unwrap();
+        assert_eq!(changed.len(), 2);
+        let use_out = changed
+            .iter()
+            .find(|(p, _)| p.ends_with("use.el"))
+            .unwrap()
+            .1
+            .clone();
+        assert!(
+            use_out.contains("(+ y 1)"),
+            "call site should be inlined: {use_out}"
+        );
+        let def_out = changed
+            .iter()
+            .find(|(p, _)| p.ends_with("def.el"))
+            .unwrap()
+            .1
+            .clone();
+        assert!(
+            !def_out.contains("defun add1"),
+            "definition should be removed: {def_out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

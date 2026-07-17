@@ -191,6 +191,21 @@ struct PatternArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SlurpBarfArgs {
+    path: String,
+    symbol: String,
+    pattern: String,
+    #[serde(default = "default_forward")]
+    dir: String,
+    #[serde(default)]
+    write: bool,
+}
+
+fn default_forward() -> String {
+    "forward".into()
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct ExtractArgs {
     path: String,
     symbol: String,
@@ -698,6 +713,58 @@ impl LispSitterMcp {
         }
     }
 
+    #[tool(
+        description = "Paredit slurp: absorb an adjacent sibling into the matched list. \
+        Example: `(list a) b` slurp `(list a)` forward → `(list a b)`. \
+        `dir` is `forward` (default) or `backward`. Pass write=true to save."
+    )]
+    async fn structural_slurp(
+        &self,
+        Parameters(args): Parameters<SlurpBarfArgs>,
+    ) -> Result<String, String> {
+        let d = lisp_sitter::transform::Direction::parse(&args.dir).map_err(|e| e.to_string())?;
+        let u = lisp_sitter::transform::slurp(
+            &self.reg,
+            &args.path,
+            &args.symbol,
+            &args.pattern,
+            d,
+        )
+        .map_err(|e| e.to_string())?;
+        if args.write {
+            ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?;
+            Ok(format!("Wrote {}", args.path))
+        } else {
+            Ok(u)
+        }
+    }
+
+    #[tool(
+        description = "Paredit barf: eject an edge element of the matched list as a sibling. \
+        Example: `(list a b)` barf forward → `(list a) b`. \
+        `dir` is `forward` (default) or `backward`. Pass write=true to save."
+    )]
+    async fn structural_barf(
+        &self,
+        Parameters(args): Parameters<SlurpBarfArgs>,
+    ) -> Result<String, String> {
+        let d = lisp_sitter::transform::Direction::parse(&args.dir).map_err(|e| e.to_string())?;
+        let u = lisp_sitter::transform::barf(
+            &self.reg,
+            &args.path,
+            &args.symbol,
+            &args.pattern,
+            d,
+        )
+        .map_err(|e| e.to_string())?;
+        if args.write {
+            ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?;
+            Ok(format!("Wrote {}", args.path))
+        } else {
+            Ok(u)
+        }
+    }
+
     #[tool(description = "Extract a sub-expression into a new function.")]
     async fn structural_extract(
         &self,
@@ -827,19 +894,47 @@ impl LispSitterMcp {
     }
 
     #[tool(
-        description = "Inline all call sites of a function with its body and remove the definition."
+        description = "Inline all call sites of a function with its body and remove the definition. \
+                       `path` may be a file, directory, or glob for a project-wide flatten."
     )]
     async fn structural_flatten(
         &self,
         Parameters(args): Parameters<FlattenArgs>,
     ) -> Result<String, String> {
-        let u = lisp_sitter::transform::flatten(&self.reg, &args.path, &args.symbol)
-            .map_err(|e| e.to_string())?;
-        if args.write {
-            ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?;
-            Ok(format!("Wrote {}", args.path))
+        let multi = std::path::Path::new(&args.path).is_dir()
+            || args.path.contains('*')
+            || args.path.contains('?');
+        if multi {
+            let paths = ops::expand_paths(&self.reg, &args.path);
+            let changed = lisp_sitter::transform::flatten_project(&self.reg, &paths, &args.symbol)
+                .map_err(|e| e.to_string())?;
+            if args.write {
+                for (p, c) in &changed {
+                    ops::atomic_write(p, c).map_err(|e| e.to_string())?;
+                }
+                Ok(format!(
+                    "Flattened `{}` in {} file(s)",
+                    args.symbol,
+                    changed.len()
+                ))
+            } else {
+                let mut out = String::new();
+                for (p, c) in &changed {
+                    let orig = ops::read_file(p).map_err(|e| e.to_string())?;
+                    out.push_str(&ops::diff_text(&orig, c, p));
+                }
+                out.push_str(&format!("{} file(s) would change", changed.len()));
+                Ok(out)
+            }
         } else {
-            Ok(u)
+            let u = lisp_sitter::transform::flatten(&self.reg, &args.path, &args.symbol)
+                .map_err(|e| e.to_string())?;
+            if args.write {
+                ops::atomic_write(&args.path, &u).map_err(|e| e.to_string())?;
+                Ok(format!("Wrote {}", args.path))
+            } else {
+                Ok(u)
+            }
         }
     }
 
@@ -867,7 +962,8 @@ impl ServerHandler for LispSitterMcp {
              Prefer targeted sub-expression edits over full rewrites: \
              structural_substitute replaces one sub-expression with another, \
              structural_splice dissolves a list's parentheses in place, \
-             structural_raise promotes a sub-expression over its enclosing list. \
+             structural_raise promotes a sub-expression over its enclosing list, \
+             structural_slurp / structural_barf grow or shrink a list at its edge. \
              Reserve structural_replace for complete top-level form rewrites. \
              Each replace/insert must be a complete, balanced top-level form.",
         )
@@ -1388,7 +1484,7 @@ mod tests {
     #[tokio::test]
     async fn test_structural_extract_empty_params() {
         let s = mcp();
-        // extract fails with StartAnchorOnNonempty but we test the empty params code path
+        // extract with empty params on a real form exercises the auto-detect path
         let (dir, p) = tmp_el("extract_params", "(defun foo (x) (+ x 1))\n");
         let r = s
             .structural_extract(Parameters(ExtractArgs {
